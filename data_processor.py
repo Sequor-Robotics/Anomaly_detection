@@ -6,6 +6,8 @@ import os
 import matplotlib.pyplot as plt
 import json
 
+##### Data loading
+
 def _ensure_2d(arr: np.ndarray) -> np.ndarray:
     """
     np.loadtxt(data_with_single_line) ... (N,) → (1,N)
@@ -197,6 +199,8 @@ def Read_parsed_data(scenario_path: str | Path):
         "tf": tf_data,
     }
 
+
+
 ##### RESAMPLING
 
 def find_bracket_indices(t_array: np.ndarray, t_star: float):
@@ -309,6 +313,18 @@ def resampling(raw_data):
         resampled_frames.append(frame_data)
 
     return resampled_frames
+
+
+
+##### Processing
+
+
+# [NOTE] Lidar points .. normalization ?
+# [NOTE] Negative dataset (near obstacles) .. need to cut some data b/c robot got far away from racks while traversing corridors during data collection
+
+
+
+##### Export
 
 def compute_total_dist(frames):
 
@@ -465,7 +481,7 @@ if __name__ == "__main__":
         
         found_any = True
         print(f"\n[INFO] Found scenario dir: {child}")
-        process_one_scenario(child, save_img=True, save_json=False)
+        process_one_scenario(child, save_img=False, save_json=True)
 
     if not found_any:
         print("[WARN] No sub-directories with parsed data found.")

@@ -7,7 +7,6 @@ We use this tool to collect Expert/Negative data of LiDAR (Livox Mid-360) and ot
 ### Definition of state-action
 
 $$
-
 \mathbf{s}_t:=
 \begin{bmatrix}
 v_{[t-k:t]} \\
@@ -23,5 +22,4 @@ d_{[t-k:t]}
 a_{[t]} \\
 \omega_{[t]}
 \end{bmatrix}
-
 $$

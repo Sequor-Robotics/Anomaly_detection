@@ -1,0 +1,106 @@
+    # ============================================================
+    # res 데이터 구조 정리 (shape / type) - data_processor.py
+    # ============================================================
+    #
+    # res: dict
+    # ------------------------------------------------------------
+    # res["parsed_dir"]
+    #   - 타입: pathlib.Path
+    #   - 의미: 현재 시나리오의 *_parsed 디렉토리 경로
+    #
+    # ------------------------------------------------------------
+    # res["lidar_frames"]
+    #   - 타입: list[dict]
+    #   - 길이: num_lidar_frames
+    #   - 각 원소(frame)의 구조:
+    #       frame = res["lidar_frames"][i]
+    #       frame["path"]       : Path          # 이 프레임이 저장된 .npz 파일 경로
+    #       frame["timestamp"]  : float         # 이 프레임의 시간 (sec)
+    #       frame["xyz"]        : np.ndarray    # shape = (N_i, 3), 포인트 클라우드 (x,y,z)
+    #       frame["intensity"]  : np.ndarray    # shape = (N_i,) 또는 (N_i,1), 없으면 None
+    #
+    #   - 전체 LiDAR 타임스탬프 벡터 예:
+    #       lidar_ts = np.array([f["timestamp"] for f in res["lidar_frames"]])
+    #
+    # ------------------------------------------------------------
+    # res["scan_frames"]
+    #   - 타입: list[dict]
+    #   - 길이: num_scan_frames
+    #   - 각 원소(frame)의 구조:
+    #       frame = res["scan_frames"][i]
+    #       frame["path"]          : Path
+    #       frame["timestamp"]     : float
+    #       frame["angle_min"]     : float
+    #       frame["angle_max"]     : float
+    #       frame["angle_increment"]: float
+    #       frame["range_min"]     : float
+    #       frame["range_max"]     : float
+    #       frame["ranges"]        : np.ndarray   # shape = (M_i,), 각 빔 거리 [m]
+    #       frame["intensities"]   : np.ndarray   # shape = (M_i,), 없으면 None
+    #
+    #   - 전체 LaserScan 타임스탬프 벡터 예:
+    #       scan_ts = np.array([f["timestamp"] for f in res["scan_frames"]])
+    #
+    # ------------------------------------------------------------
+    # res["imu"]
+    #   - 타입: dict 또는 None (IMU가 없으면 None)
+    #   - imu = res["imu"]
+    #   - 구조:
+    #       imu["t"]       : np.ndarray  # shape = (N_imu,)          시간 [s]
+    #       imu["quat"]    : np.ndarray  # shape = (N_imu, 4)       (qx,qy,qz,qw)
+    #       imu["ang_vel"] : np.ndarray  # shape = (N_imu, 3)       (wx,wy,wz) [rad/s]
+    #       imu["lin_acc"] : np.ndarray  # shape = (N_imu, 3)       (ax,ay,az) [m/s^2]
+    #       imu["raw"]     : np.ndarray  # shape = (N_imu, 11)      전체 csv 원본
+    #
+    #   - csv 헤더: t,qx,qy,qz,qw,wx,wy,wz,ax,ay,az
+    #
+    # ------------------------------------------------------------
+    # res["pose"]
+    #   - 타입: dict 또는 None
+    #   - pose = res["pose"]
+    #   - 구조:
+    #       pose["t"]    : np.ndarray  # shape = (N_pose,)
+    #       pose["pos"]  : np.ndarray  # shape = (N_pose, 3)   (px,py,pz)
+    #       pose["quat"] : np.ndarray  # shape = (N_pose, 4)   (qx,qy,qz,qw)
+    #       pose["raw"]  : np.ndarray  # shape = (N_pose, 8)   전체 csv 원본
+    #
+    #   - csv 헤더: t,px,py,pz,qx,qy,qz,qw
+    #
+    # ------------------------------------------------------------
+    # res["odom"]
+    #   - 타입: dict 또는 None
+    #   - odom = res["odom"]
+    #   - 구조:
+    #       odom["t"]       : np.ndarray  # shape = (N_odom,)
+    #       odom["pos"]     : np.ndarray  # shape = (N_odom, 3)   (px,py,pz)
+    #       odom["quat"]    : np.ndarray  # shape = (N_odom, 4)   (qx,qy,qz,qw)
+    #       odom["lin_vel"] : np.ndarray  # shape = (N_odom, 3)   (vx,vy,vz) [m/s]
+    #       odom["ang_vel"] : np.ndarray  # shape = (N_odom, 3)   (wx,wy,wz) [rad/s]
+    #       odom["raw"]     : np.ndarray  # shape = (N_odom, 14)  전체 csv 원본
+    #
+    #   - csv 헤더: t,px,py,pz,qx,qy,qz,qw,vx,vy,vz,wx,wy,wz
+    #
+    # ------------------------------------------------------------
+    # res["tf"]
+    #   - 타입: dict 또는 None
+    #   - tf = res["tf"]
+    #   - 구조:
+    #       tf["list"] : list[dict], 길이 = N_tf
+    #           각 원소 tr:
+    #               tr["t"]          : float                 # 시간 [s]
+    #               tr["topic"]      : str                   # "/tf" 또는 "/tf_static"
+    #               tr["parent"]     : str                   # parent frame id
+    #               tr["child"]      : str                   # child frame id
+    #               tr["translation"]: np.ndarray (3,)       # (tx,ty,tz)
+    #               tr["quat"]       : np.ndarray (4,)       # (qx,qy,qz,qw)
+    #
+    #       tf["raw"]  : np.ndarray, dtype=object, shape = (N_tf, 11)
+    #           각 row: [t, topic, parent, child, tx, ty, tz, qx, qy, qz, qw]
+    #
+    # ------------------------------------------------------------
+    # 예시: 타임스탬프 벡터 꺼내기
+    #   lidar_ts = np.array([f["timestamp"] for f in res["lidar_frames"]])
+    #   scan_ts  = np.array([f["timestamp"] for f in res["scan_frames"]])
+    #   imu_t    = res["imu"]["t"]   if res["imu"]   is not None else None
+    #   pose_t   = res["pose"]["t"]  if res["pose"]  is not None else None
+    #   odom_t   = res["odom"]["t"]  if res["odom"]  is not None else None

@@ -1,3 +1,4 @@
-test/
-expert_*/
-neg_*/
+*.txt
+Data/
+__pycache__/
+res/

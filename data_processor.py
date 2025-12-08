@@ -6,6 +6,7 @@ import os
 import matplotlib.pyplot as plt
 import json
 
+
 ##### Data loading
 
 def _ensure_2d(arr: np.ndarray) -> np.ndarray:
@@ -287,6 +288,7 @@ def resampling(raw_data):
     for idx, (ts, scan_frame) in enumerate(zip(time_stamp_std, raw_laser)):
 
         # Laser
+        # [NOTE] No need to include all the data points ... Extract some of them
         angle_min = scan_frame["angle_min"]
         angle_inc = scan_frame["angle_increment"]
         ranges    = scan_frame["ranges"].astype(np.float64)
@@ -320,6 +322,7 @@ def resampling(raw_data):
 
 
 # [NOTE] Lidar points .. normalization ?
+# [NOTE] Lidar points .. No need to use it all. Extract some of them.
 # [NOTE] Negative dataset (near obstacles) .. need to cut some data b/c robot got far away from racks while traversing corridors during data collection
 
 

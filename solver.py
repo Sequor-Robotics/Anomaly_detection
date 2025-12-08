@@ -110,7 +110,7 @@ class solver():
             train_out = self.test_eval_VAE(self.train_iter,'cuda')
             test_in_out = self.test_eval_VAE(self.test_e_iter,'cuda')
             test_ood_out = self.test_eval_VAE(self.test_n_iter,'cuda')
-            strTemp = ("epoch: [%d/%d] loss: [%.3f] train_loss:[%.4f] test_loss: [%.4f]"
+            strTemp = ("\nepoch: [%d/%d] loss: [%.3f] train_loss:[%.4f] test_loss: [%.4f]"
                         %(epoch,self.EPOCH,loss_avg,train_out['total'],test_in_out['total']))
             print_n_txt(_f=f,_chars=strTemp)
             strTemp =  ("[ID] recon avg: [%.3f] kl_div avg: [%.3f]"%
@@ -426,7 +426,7 @@ class solver():
             test_in_out = self.test_eval_mdn(self.test_e_iter,'cuda')
             test_ood_out = self.test_eval_mdn(self.test_n_iter,'cuda')
 
-            strTemp = ("epoch: [%d/%d] loss: [%.3f] train_l2:[%.4f] test_l2: [%.4f]"
+            strTemp = ("\nepoch: [%d/%d] loss: [%.3f] train_l2:[%.4f] test_l2: [%.4f]"
                         %(epoch,self.EPOCH,loss_avg,train_out['l2_norm'],test_in_out['l2_norm']))
             print_n_txt(_f=f,_chars=strTemp)
 
@@ -456,9 +456,15 @@ class solver():
                 alea_unct   = unct_out['alea'] # [N x D]
                 pi_entropy  = unct_out['pi_entropy'] # [N]
 
+
+                ### Need to deterimine a single value for ood score for each sample
+                ### should collapse D-directional dim.
+
+                # ## a) mean
                 # epis_unct = torch.mean(epis_unct,dim=-1)
                 # alea_unct = torch.mean(alea_unct,dim=-1)
                 
+                ## b) max
                 epis_unct,_ = torch.max(epis_unct,dim=-1)
                 alea_unct,_ = torch.max(alea_unct,dim=-1)        
                 
@@ -471,7 +477,7 @@ class solver():
             out_eval = {'epis_' : epis_,'alea_' : alea_,'pi_entropy_':pi_entropy_}
         return out_eval
     
-    def test_eval_mdn(self,data_iter,device):
+    def test_eval_mdn(self, data_iter, device):
         with torch.no_grad():
             n_total,l2_sum,epis_unct_sum,alea_unct_sum,entropy_pi_sum = 0,0,0,0,0
             self.model.eval() # evaluate (affects DropOut and BN)
@@ -480,7 +486,7 @@ class solver():
                 mdn_out     = self.model.forward(batch_in.to(device))
                 pi,mu,sigma = mdn_out['pi'],mdn_out['mu'],mdn_out['sigma']
 
-                l2        = mdn_eval(pi,mu,sigma,batch_out.to(device))['l2_mean']
+                l2        = mdn_eval(pi,mu,sigma,batch_out.to(device))['l2_mean'] # [N]
                 unct_out    = mdn_uncertainties(pi,mu,sigma)
                 epis_unct   = unct_out['epis'] # [N x D]
                 alea_unct   = unct_out['alea'] # [N x D]

@@ -16,15 +16,18 @@ def mdn_eval(pi,mu,sigma,data):
     sigma:   [N x K x D]
     data: [N x D]
     """
-    max_idx = torch.argmax(pi,dim=1) # [N]
-    mu      = torch.softmax(mu,dim=2) #[N x K x D]
 
-    pi_usq = torch.unsqueeze(pi,2) # [N x K x 1]
+
+    max_idx = torch.argmax(pi,dim=1)  # [N] / Mode index with maximum mode weight
+    mu      = torch.softmax(mu,dim=2) # [N x K x D] / normalize mu ... ??
+
+    pi_usq = torch.unsqueeze(pi, 2)  # [N x K x 1]
     pi_exp = pi_usq.expand_as(sigma) # [N x K x D]
     
     idx_gather = max_idx.unsqueeze(dim=-1).repeat(1,mu.shape[2]).unsqueeze(1) # [N x 1 x D]
-    mu_sel = torch.gather(mu,dim=1,index=idx_gather).squeeze(dim=1) # [N x D]
-    mu_prime = torch.sum(torch.mul(pi_exp,mu),dim=1)
+
+    mu_sel = torch.gather(mu,dim=1,index=idx_gather).squeeze(dim=1) # [N x D] / Gather mean vector of a mode with maximum weight
+    mu_prime = torch.sum(torch.mul(pi_exp,mu),dim=1) # [N x D] / weighted sum
     max_pi_dis = torch.mean((mu_sel-data)**2,dim=1)
     mean_dis = torch.mean((mu_prime-data)**2,dim=1)
     #print(mean_dis.size())

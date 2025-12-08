@@ -1,130 +1,224 @@
-import matplotlib.pyplot as plt
-import os,json
+# plot.py
+
+import os
+import json
 import argparse
 import numpy as np
-from tools.measure_ood import measure
+import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from tools.measure_ood import measure
+import re
 
-parser = argparse.ArgumentParser()
+def _extract_frame_from_logtxt(base_dir: str):
 
-parser.add_argument('--id', type=int,default=1,help='id')
-parser.add_argument('--mode', type=str,default='mdn',help='mdn vae')
+    log_txt_path = os.path.join(base_dir, 'log.txt')
+    if not os.path.isfile(log_txt_path):
+        return None
 
-args = parser.parse_args()
+    frame_val = None
+    with open(log_txt_path, 'r') as f:
+        for line in f:
+            if 'Namespace(' in line and 'frame=' in line:
+                m = re.search(r'frame=(\d+)', line)
+                if m:
+                    frame_val = int(m.group(1))
+                    break
 
-DIR = './res/{}/{}/log.json'.format(args.mode,args.id)
-with open(DIR) as f:
-    data = json.load(f)
-test_l2 = data['test_l2']
-train_l2 = data['train_l2']
-auroc = data['auroc']
-aupr = data['aupr']
-ind = data['id_eval']
-ood = data['ood_eval']
+    return frame_val
 
-neg_case = np.asarray(data['neg_case'])
-exp_case = np.asarray(data['exp_case'])
-f.close()
-if args.mode == 'mdn':
-    method = ['epis_','alea_','pi_entropy_']
 
-elif args.mode == 'vae':
-    method = ['recon_','kl_']
-elif args.mode == 'vqvae':
-    method = ['recon_','vq_']
 
-elif args.mode == 'wae':
-    method = ['recon_','mmd_']
+def _load_log(run_name: str, mode: str, exp_id: int):
 
-elif args.mode == 'rae':
-    method = ['recon_','zreg_']
-else:
-    raise NotImplementedError
+    # ./res/{run_name}_{mode}_{id}/log.json
+    base_dir = os.path.join('./res', f'{run_name}_{mode}_{exp_id}')
+    log_path = os.path.join(base_dir, 'log.json')
 
-'''
-Plot NLL, AUROC, AUPR
-'''
-plt.figure(figsize=(20,20))
-plot_size = [2+len(method),len(method)+3]
-grid = plt.GridSpec(plot_size[0],plot_size[1])
-#plt.suptitle("MDN Learning Result")
-plt.subplot(grid[0,:5])
-plt.title("L2")
-plt.plot(train_l2,'--k',label='train')
-plt.plot(test_l2,label='test',color='b')
-plt.xlabel("Epoch")
-plt.ylabel("L2")
-leg = plt.legend(bbox_to_anchor=(1.05, 1),loc=2, borderaxespad=0.)
-'''
-Plot Histogram by case
-Plot ROC curve in one plot
-'''
-situation = [[0,2],[0,3],[0,6],[1,2],[1,3],[0,4],[0,5],[1,6]]
-situation_name = ['straighht_road','cross_road','unstable','lane_keeping',
-                    'lane_changing','overtaking','collision']
-for k,j in enumerate(method):
-    ood_ar = np.asarray(ood[j])
-    case4 = np.where(neg_case[:,0]==1)[0] # straight_road_index
-    case4 = ood_ar[case4]
-    case5 = np.where(neg_case[:,1]==1)[0] # cross_road_index
-    case5 = ood_ar[case5]
-    ind_ar = np.asarray(ind[j])
+    if not os.path.isfile(log_path):
+        raise FileNotFoundError(f"log.json not found: {log_path}")
 
-    case1 = np.where(exp_case[:,0]==1)[0] 
-    case1 = ind_ar[case1]
-    case2 = np.where(exp_case[:,1]==1)[0] 
-    case2 = ind_ar[case2]
-    case3 = np.where(exp_case[:,2]==1)[0] 
-    case3 = ind_ar[case3]
+    with open(log_path, 'r') as f:
+        data = json.load(f)
 
-    max_1 = np.max(ood_ar)
-    min_1 = np.min(ood_ar)
-    max_2 = np.max(ind_ar)
-    min_2 = np.min(ind_ar)
-    min_ = min(min_1,min_2)
-    max_ = max(max_1,max_2)
-    
-    plt.subplot(grid[k+1,0])
-    plt.title("\n \n %s \n"%('Expert: highway'))
-    plt.hist(case1.tolist(),color='limegreen', alpha=0.5,orientation="horizontal")
-    plt.ylim((min_,max_))
+    return data, base_dir
+
+
+
+def plot_run(run_name: str, mode: str, exp_id: int):
+    """
+    main.py caller function
+    """
+    data, base_dir = _load_log(run_name, mode, exp_id)
+
+    train_l2 = data['train_l2']      # list[epoch] of float
+    test_l2  = data['test_l2']       # list[epoch] of float
+    auroc    = data['auroc']         # dict: metric -> float
+    aupr     = data['aupr']          # dict: metric -> float
+    id_eval  = data['id_eval']       # dict: metric -> list[score]
+    ood_eval = data['ood_eval']      # dict: metric -> list[score]
+
+    # select (mode - metric key) pairs
+    if mode == 'mdn':
+        method = ['epis_', 'alea_', 'pi_entropy_']
+    elif mode == 'vae':
+        method = ['recon_', 'kl_']
+    elif mode == 'vqvae':
+        method = ['recon_', 'vq_']
+    elif mode == 'wae':
+        method = ['recon_', 'mmd_']
+    elif mode == 'rae':
+        method = ['recon_', 'zreg_']
+    else:
+        raise NotImplementedError(f"Unknown mode: {mode}")
+
+
+    n_methods = len(method)
+
+    # ---------- Figure / Subplots ----------
+    fig, axes = plt.subplots(
+        n_methods + 1, 2,
+        figsize=(12, 4 * (n_methods + 1)),
+        squeeze=False
+    )
+
+    # ---- (row 0, col 0) L2 train / test ----
+    ax_l2 = axes[0, 0]
+    epochs = np.arange(1, len(train_l2) + 1)
+
+    ax_l2.plot(epochs, train_l2, '--', label='train L2')
+    ax_l2.plot(epochs, test_l2, label='test L2')
+    ax_l2.set_xlabel("Epoch")
+    ax_l2.set_ylabel("L2 error")
+    ax_l2.set_title("Train / Test L2 over epochs")
+    ax_l2.legend()
+    ax_l2.grid(True, linestyle=':')
+
+    # ---- (row 0, col 1) AUROC/AUPR summary ----
+    ax_text = axes[0, 1]
+    ax_text.axis('off')
+
+    frame_val = _extract_frame_from_logtxt(base_dir)
+    frame_str = str(frame_val) if frame_val is not None else "unknown"
+
+    text_lines = [
+        f"mode: {mode}, id: {exp_id}",
+        f"run:  {run_name}",
+        f"frame: {frame_str}",
+        "",
+        "OOD metrics (AUROC / AUPR):"
+    ]
+    for m in method:
+        m_name = m[:-1]
+        if m in auroc and m in aupr:
+            text_lines.append(
+                f"  {m_name:12s}: AUROC={auroc[m]:.3f}, AUPR={aupr[m]:.3f}"
+            )
+
+    ax_text.text(
+        0.01, 0.99,
+        "\n".join(text_lines),
+        va='top', ha='left',
+        fontsize=10
+    )
+
+    # ---------- Histogtram per method + ROC ----------
+    for idx, m in enumerate(method):
+        row = idx + 1
+        m_name = m[:-1]
+
+        id_scores  = np.asarray(id_eval[m])
+        ood_scores = np.asarray(ood_eval[m])
+
+        # (row, col=0) score distribution (ID vs OOD)
+        ax_hist = axes[row, 0]
+        bins = 30
+
+        ax_hist.hist(id_scores,  bins=bins, alpha=0.6,
+                     label='ID (expert)', density=True)
+        ax_hist.hist(ood_scores, bins=bins, alpha=0.6,
+                     label='OOD (negative)', density=True)
+        ax_hist.set_title(f"{m_name} score distribution")
+        ax_hist.set_xlabel("score")
+        ax_hist.set_ylabel("density")
+        ax_hist.legend()
+        ax_hist.grid(True, linestyle=':')
+
+        # (row, col=1) ROC curve
+        ax_roc = axes[row, 1]
+
+        auroc_m, aupr_m, fpr, tpr = measure(
+            id_scores.tolist(),
+            ood_scores.tolist(),
+            plot=True
+        )
+
+        ax_roc.plot(fpr, tpr,
+                    label=f"ROC (AUROC={auroc_m:.3f}, AUPR={aupr_m:.3f})")
+        ax_roc.plot([0, 1], [0, 1], 'k--', linewidth=0.8)
+        ax_roc.set_xlabel("False Positive Rate")
+        ax_roc.set_ylabel("True Positive Rate")
+        ax_roc.set_title(f"{m_name} ROC curve")
+        ax_roc.legend()
+        ax_roc.grid(True, linestyle=':')
+
+        ax_roc.xaxis.set_major_locator(mticker.MaxNLocator(5))
+        ax_roc.yaxis.set_major_locator(mticker.MaxNLocator(5))
+
     plt.tight_layout()
 
-    plt.subplot(grid[k+1,1])
-    plt.title("\n \n %s \n"%('Expert: Urban'))
-    plt.hist(case2.tolist(),color='royalblue', alpha=0.5,orientation="horizontal")
-    plt.ylim((min_,max_))
-    plt.tight_layout()
+    out_path = os.path.join(base_dir, f"plot_{mode}_{exp_id}.png")
+    plt.savefig(out_path, dpi=150)
+    print(f"[INFO] Saved figure to: {out_path}")
 
-    plt.subplot(grid[k+1,2])
-    plt.title("Eval Method: %s \nAUROC:[%.3f] AUPR: [%.3f] \n %s \n"%(j[:-1],auroc[j],aupr[j],'Expert: FMTC'))
-    plt.hist(case3.tolist(),color='lightseagreen', alpha=0.5,orientation="horizontal")
-    plt.ylim((min_,max_))
-    plt.tight_layout()
 
-    plt.subplot(grid[k+1,3])
-    plt.title("\n \n %s \n"%('Negative: Straight Road'))
-    plt.hist(case4.tolist(),color='r', alpha=0.5,orientation="horizontal")
-    plt.ylim((min_,max_))
-    plt.tight_layout()
+def _find_latest_run(mode: str, exp_id: int):
 
-    plt.subplot(grid[k+1,4])
-    plt.title("\n \n %s \n"%('Negative: Cross Road'))
-    plt.hist(case5.tolist(),color='orange', alpha=0.5,orientation="horizontal")
-    plt.ylim((min_,max_))
-    plt.tight_layout()
-    
-    plt.subplot(grid[len(method)+1,2*k:2*k+2])
-    plt.title("ROC Curve Method: %s"%(j[:-1]))
-    for i,j in situation:
-        ood_temp1 = np.where(neg_case[:,i]==1)[0]
-        ood_temp2 = np.where(neg_case[:,j]==1)[0]
-        ood_temp = np.intersect1d(ood_temp1,ood_temp2)
-        ood_temp = ood_ar[ood_temp].tolist()
-        id_temp = ind_ar.tolist()
-        # print(len(ood_temp),len(id_temp))
-        auroc_temp, aupr_temp, fpr,tpr = measure(id_temp,ood_temp,True)
-        plt.plot(fpr,tpr,label='%s,%s\nAUROC:%.3f AUPR %.3f'%(situation_name[i],situation_name[j],auroc_temp,aupr_temp))
-        plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05))
-    plt.tight_layout()
-plt.savefig("./res/{}_{}.png".format(args.mode,args.id))
+    if not os.path.isdir('./res'):
+        raise FileNotFoundError("./res directory not found")
+
+    suffix = f"_{mode}_{exp_id}"
+
+    subdirs = [
+        d for d in os.listdir('./res')
+        if os.path.isdir(os.path.join('./res', d)) and d.endswith(suffix)
+    ]
+    if not subdirs:
+        raise FileNotFoundError(
+            f"No run folders matching '*{suffix}' under ./res"
+        )
+
+    subdirs.sort()
+    latest_dir = subdirs[-1]  # Ex: '20251209_010203_mdn_1'
+
+    run_name = latest_dir[:-len(suffix)]
+    return run_name
+
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', type=str, default='mdn',
+                        help='mdn / vae / wae / rae / vqvae')
+    parser.add_argument('--id', type=int, default=1,
+                        help='experiment id (same as main.py --id)')
+    parser.add_argument('--run', type=str, default='latest',
+                        help="run folder name under ./res/ ")
+    args = parser.parse_args()
+
+    if args.run == 'latest':
+        run_name = _find_latest_run(args.mode, args.id)  # latest
+    else:
+        run_name = args.run
+        # Esistence Check - './res/{run_name}_{mode}_{id}'
+        run_dir = os.path.join('./res', f'{run_name}_{args.mode}_{args.id}')
+        if not os.path.isdir(run_dir):
+            raise FileNotFoundError(
+                f"Run folder not found: {run_dir}"
+            )
+
+    print(f"[INFO] Using run_name = {run_name}")
+    plot_run(run_name, args.mode, args.id)
+
+
+if __name__ == "__main__":
+    main()

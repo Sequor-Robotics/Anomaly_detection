@@ -5,9 +5,12 @@ from tools.measure_ood import measure
 import torch
 import random
 import numpy as np
-
+from datetime import datetime
 import argparse
 import os
+
+from plot import plot_run
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root'    , type=str, default='.'  , help='root directory of the dataset')
@@ -77,30 +80,21 @@ elif args.mode == 'rae':
 else:
     raise NotImplementedError
 
-DIR = './res/{}/{}/'.format(args.mode,args.id)
-DIR2 = './res/{}/{}/ckpt/'.format(args.mode,args.id)
+run_name = datetime.now().strftime("%Y%m%d_%H%M%S")   # YYYYMMDD
 
 
-try:
-    os.mkdir('./res/{}'.format(args.mode))
-except:
-    pass
+DIR = './res/' + run_name + '_{}_{}/'.format(args.mode, args.id)
+DIR2     = os.path.join(DIR, 'ckpt/')
 
-log = Logger(DIR+'log.json',exp_case =  Solver.test_e_dataset.case, neg_case = Solver.test_n_dataset.case)
-print(Solver.test_e_dataset.case[:,0].sum(),Solver.test_e_dataset.case[:,1].sum(),Solver.test_e_dataset.case[:,2].sum())
+os.makedirs(DIR2, exist_ok=True)
 
-try:
-    os.mkdir(DIR)
-except:
-    pass
+log     = Logger(os.path.join(DIR, 'log.json'),
+                 exp_case=Solver.test_e_dataset.case,
+                 neg_case=Solver.test_n_dataset.case)
 
-try:
-    os.mkdir(DIR2)
-except:
-    pass
+txtName = os.path.join(DIR, 'log.txt')
+f       = open(txtName, 'w')             # Open txt file
 
-txtName = (DIR+'log.txt')
-f = open(txtName,'w') # Open txt file
 print_n_txt(_f=f,_chars='Text name: '+txtName)
 print_n_txt(_f=f,_chars=str(args))
 
@@ -113,7 +107,7 @@ ood_eval = Solver.eval_func(Solver.test_n_iter,'cuda')
 auroc, aupr = {},{}
 for m in method:
     temp1, temp2 = measure(id_eval[m],ood_eval[m])
-    strTemp = ("%s AUROC: [%.3f] AUPR: [%.3f]"%(m[:-1],temp1,temp2))
+    strTemp = ("\n%s AUROC: [%.3f] AUPR: [%.3f]"%(m[:-1],temp1,temp2))
     print_n_txt(_f=f,_chars= strTemp)
     auroc[m] = temp1
     aupr[m]  = temp2
@@ -121,3 +115,9 @@ for m in method:
 log.ood(id_eval,ood_eval,auroc,aupr)
 torch.save(Solver.model.state_dict(),DIR2+'model.pt')
 log.save()
+
+# Plot
+try:
+    plot_run(run_name, args.mode, args.id)
+except Exception as e:
+    print_n_txt(_f=f, _chars=f"[WARN] plotting failed: {e}")

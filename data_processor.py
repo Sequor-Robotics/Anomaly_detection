@@ -329,6 +329,25 @@ def resampling(raw_data):
 
 ##### Export
 
+def save_distance_txt(total_dist: float, scenario_dir: str | Path):
+    """
+    save 'distance.txt'
+    """
+    scenario_path = Path(scenario_dir).resolve()
+
+    if scenario_path.name.endswith("_parsed"):
+        scenario_root = scenario_path.parent
+    else:
+        scenario_root = scenario_path
+
+    out_path = scenario_root / "distance.txt"
+
+    with out_path.open("w", encoding="utf-8") as f:
+        f.write(f"{total_dist:.6f}\n")
+
+    print(f"[INFO] Saved total distance to {out_path}")
+
+
 def compute_total_dist(frames):
 
     positions = []
@@ -449,6 +468,9 @@ def process_one_scenario(scenario_dir, save_img=False, save_json=False):
 
     # 5. Save to local .json file
     export_frames_to_json( res, scenario_dir, save_json=save_json)
+
+    # 6. Save total distance to distance.txt
+    save_distance_txt(total_dist, scenario_dir)
 
 
 

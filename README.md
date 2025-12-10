@@ -9,3 +9,16 @@ We use this tool to collect Expert/Negative data of LiDAR (Livox Mid-360) and ot
 $$
 \mathbf{s}_t:= \begin{bmatrix} v_{[t-k:t]} \\ a_{[t-k:t]} \\ \omega_{[t-k:t]} \\ d_{[t-k:t]} \end{bmatrix} \qquad \mathbf{a}_t:= \begin{bmatrix} a_{[t]} \\ \omega_{[t]} \end{bmatrix}
 $$
+
+
+### How to use
+
+processing raw data
+
+    python data_parser.py --src_dir ./Data
+    python data_processor.py --src_dir ./Data
+
+training
+
+    python main.py --frame 1 --id 1   # MDN
+    python main.py --frame 1 --mode vae --h_dim 128 --z_dim 32 --id 1   # VAE

@@ -1,5 +1,3 @@
-# plot.py
-
 import os
 import json
 import argparse
@@ -8,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from tools.measure_ood import measure
 import re
+
 
 def _extract_frame_from_logtxt(base_dir: str):
 

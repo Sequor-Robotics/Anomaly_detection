@@ -96,7 +96,7 @@ def load_expert_dataset(path, frame, exp_data_name_list):
             continue
 
         scenario_name = scenario_root.name
-        processed_path = scenario_root / f"{scenario_name}_processed.json"
+        processed_path = scenario_root / f"{scenario_name}_prcd.json"
 
         if not processed_path.exists():
             print(f"[load_expert_dataset] Warning: {processed_path} not found, skip.")
@@ -185,7 +185,7 @@ def load_negative_dataset(path, frame, neg_data_name_list):
             continue
 
         scenario_name = scenario_root.name
-        processed_path = scenario_root / f"{scenario_name}_processed.json"
+        processed_path = scenario_root / f"{scenario_name}_prcd.json"
 
         if not processed_path.exists():
             print(f"[load_negative_dataset] Warning: {processed_path} not found, skip.")

@@ -287,12 +287,40 @@ def resampling(raw_data):
 
     for idx, (ts, scan_frame) in enumerate(zip(time_stamp_std, raw_laser)):
 
-        # Laser
-        # [NOTE] No need to include all the data points ... Extract some of them
+        ## Laser
+        # RAW data
         angle_min = scan_frame["angle_min"]
         angle_inc = scan_frame["angle_increment"]
-        ranges    = scan_frame["ranges"].astype(np.float64)
-        angles    = angle_min + np.arange(ranges.shape[0], dtype=np.float64) * angle_inc
+        raw_ranges = scan_frame["ranges"].astype(np.float64)
+        raw_angles = angle_min + np.arange(raw_ranges.shape[0], dtype=np.float64) * angle_inc
+
+        # Laser Down-Sampling
+        angle_min_new = (-100) * np.pi / 180  # angle_new_min
+        angle_max_new =  (100) * np.pi / 180  # angle_new_max
+        N_new_samples = 32                    # number of newly down-sampled data points
+
+        # new angles grid
+        new_angles = np.linspace(angle_min_new, angle_max_new, N_new_samples)
+
+        # nearest indices
+        idx = np.searchsorted(raw_angles, new_angles)
+        idx = np.clip(idx, 1, len(raw_angles) - 1)
+        left = raw_angles[idx - 1]
+        right = raw_angles[idx]
+        choose_right = (np.abs(right - new_angles) < np.abs(left - new_angles))
+        nearest_indices = idx.copy()
+        nearest_indices[~choose_right] = idx[~choose_right] - 1
+        new_ranges_raw = raw_ranges[nearest_indices]
+
+        # normalization
+        MAX_DIST = 5
+        new_ranges = np.clip(new_ranges_raw, 0, MAX_DIST)
+        new_ranges = (1 - new_ranges) / MAX_DIST
+
+        # Downsampled
+        angles = new_angles
+        ranges = new_ranges
+
 
         # IMU
         lin_acc_star = interpolate_time_series(time_stamp_imu, imu_lin_acc, ts)
@@ -319,10 +347,6 @@ def resampling(raw_data):
 
 
 ##### Processing
-
-
-# [NOTE] Lidar points .. normalization ?
-# [NOTE] Lidar points .. No need to use it all. Extract some of them.
 # [NOTE] Negative dataset (near obstacles) .. need to cut some data b/c robot got far away from racks while traversing corridors during data collection
 
 
@@ -420,7 +444,7 @@ def export_frames_to_json(frames, scenario_dir: str | Path, save_json: bool = Fa
         scenario_root = scenario_path
 
     scenario_name = scenario_root.name
-    out_path = scenario_root / f"{scenario_name}_processed.json"
+    out_path = scenario_root / f"{scenario_name}_prcd.json"
 
     serializable_frames = []
 
@@ -506,7 +530,7 @@ if __name__ == "__main__":
         
         found_any = True
         print(f"\n[INFO] Found scenario dir: {child}")
-        process_one_scenario(child, save_img=False, save_json=True)
+        process_one_scenario(child, save_img=True, save_json=True)
 
     if not found_any:
         print("[WARN] No sub-directories with parsed data found.")

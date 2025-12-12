@@ -354,17 +354,17 @@ def find_single_mcap_dir(d: Path):
 def main(args):
 
     src_root = Path(args.src_dir).resolve()
-    print(f"[INFO] root src_dir: {src_root}")
+    print(f"\n[INFO] root src_dir: {src_root}")
 
     # Inspect all sub-folders in root directory (src_root)
-    print(f"[INFO] Scanning sub-directories of {src_root} ...")
+    print(f"\n[INFO] Scanning sub-directories of {src_root} ...")
     found_any = False
     for child in sorted(src_root.iterdir()):
         if not child.is_dir():
             continue
         if find_single_mcap_dir(child):
             found_any = True
-            print(f"[INFO] Found dataset dir: {child}")
+            print(f"\n[INFO] Found dataset dir: {child}")
             parse_one_dataset(child)
 
     if not found_any:

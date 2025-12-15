@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from pathlib import Path
 from typing import List, Tuple
+import re
 
 
 MAX_N_OBJECTS = 5
@@ -167,31 +168,29 @@ def load_negative_dataset(path, frame, neg_data_name_list):
       act  : (N, D_out) FloatTensor (Target)
       case : (N, 7)     FloatTensor (dummy)
       file : (N,)       np.ndarray  (sample source info)
+      neg_scenario : (N,) list[str]  (scenario name per sample)
     """
 
-    rt   = []
-    act  = []
+    rt = []
+    act = []
     case = []
     file = []
+    neg_scenario = []
 
-    # 기존 R3 코드에서는 road/hazard 정보를 7차원으로 넣었으므로
-    # 구조를 맞추기 위해 일단 7차원 dummy 0벡터 사용
     dummy_case = [0.0] * 7
 
     for data_path in neg_data_name_list:
+
+        scenario_prefix = re.sub(r'_\d+$', '', data_path)
+
         scenario_root = Path(path) / data_path
         if not scenario_root.exists():
-            print(f"[load_negative_dataset] Warning: {scenario_root} not found, skip.")
             continue
 
-        scenario_name = scenario_root.name
-        processed_path = scenario_root / f"{scenario_name}_prcd.json"
-
+        processed_path = scenario_root / f"{scenario_root.name}_prcd.json"
         if not processed_path.exists():
-            print(f"[load_negative_dataset] Warning: {processed_path} not found, skip.")
             continue
 
-        # Read '*_processed.json'
         with open(processed_path, "r") as f:
             data = json.load(f)
 
@@ -199,10 +198,9 @@ def load_negative_dataset(path, frame, neg_data_name_list):
         n_frames = len(frames)
 
         if n_frames < frame:
-            print(f"[load_negative_dataset] Warning: {processed_path} has only {n_frames} frames (< frame={frame}), skip.")
             continue
 
-        # Sliding window
+        # ✅ 슬라이딩 윈도우 = 샘플 단위
         for seq in range(0, n_frames - frame + 1):
             data_vec = []
             target_vec = []
@@ -210,11 +208,8 @@ def load_negative_dataset(path, frame, neg_data_name_list):
             for it in range(frame):
                 fr = frames[seq + it]
                 s = build_state(fr)
-
-                # State (input)
                 data_vec.extend(s)
 
-                # Action (output)
                 if it == frame - 1:
                     target_vec.append(float(s[2]))  # lin_acc x
                     target_vec.append(float(s[3]))  # lin_acc y
@@ -224,10 +219,8 @@ def load_negative_dataset(path, frame, neg_data_name_list):
             act.append(target_vec)
             case.append(dummy_case)
 
-            # # sample source
-            # file.append(str(processed_path) + f":{seq}")
+            neg_scenario.append(scenario_prefix)
 
-    # No data case ... dummy
     if len(rt) == 0:
         print("[load_negative_dataset] Warning: no negative data loaded.")
         return (
@@ -235,6 +228,7 @@ def load_negative_dataset(path, frame, neg_data_name_list):
             torch.empty(0, 0),
             torch.empty(0, len(dummy_case)),
             np.asarray(file),
+            [],
         )
 
     rt_tensor   = torch.FloatTensor(rt)
@@ -242,22 +236,26 @@ def load_negative_dataset(path, frame, neg_data_name_list):
     case_tensor = torch.FloatTensor(case)
     file_arr    = np.asarray(file)
 
-    return rt_tensor, act_tensor, case_tensor, file_arr
+    return rt_tensor, act_tensor, case_tensor, file_arr, neg_scenario
+
 
 
 torch.manual_seed(0)
 
 
 class MixQuality():
-    def __init__(self,root = "../Data",train=True,neg=False,norm=True,exp_case=[1,2,3],frame=1):
+    def __init__(self, root, train=True, neg=False, norm=True,
+             exp_case=[1,2,3], neg_case=None, frame=1):
 
-        self.train=train
-        self.neg = neg
+        self.neg_case_filter = neg_case if neg else None
 
-        self.exp_list, self.neg_list = get_name_lists(root)
+        self.train = train
+        self.neg   = neg
+
+        self.exp_list, self.neg_list = get_name_lists(root, self.train)
         
         self.e_in, self.e_target, self.e_case, self.file_expert   = load_expert_dataset(root,frame,self.exp_list)
-        self.n_in, self.n_target, self.n_case, self.file_negative = load_negative_dataset(root,frame,self.neg_list)
+        self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario = load_negative_dataset(root,frame,self.neg_list)
         
         """
         e_in     : Expert input data samples
@@ -309,38 +307,48 @@ class MixQuality():
         rand_e_idx = torch.randperm(self.e_size)
 
         if self.train:
-            # use 80% of expert data for training
-            e_idx = rand_e_idx[:int(self.e_size*0.8)]
+            # ======================
+            # TRAIN : expert only
+            # ======================
+            e_idx = rand_e_idx[:int(self.e_size * 0.8)]
 
-            # sampled data 
-            e_in = self.e_in[e_idx]
-            e_target = self.e_target[e_idx]
+            self.x = self.e_in[e_idx]
+            self.y = self.e_target[e_idx]
+            self.case = self.e_case[e_idx]
             self.e_label = e_idx.size(0)
 
-            self.x = e_in
-            self.y = e_target
-            self.case = self.e_case[e_idx]
-            # self.path = self.file_expert[e_idx.numpy()]
-
         else:
-            # rest of expert data (20%) for test
-            e_idx = rand_e_idx[int(self.e_size*0.8):]
+            # ======================
+            # TEST
+            # ======================
+            e_idx = rand_e_idx[int(self.e_size * 0.8):]
 
             if not self.neg:
-
+                # ---------- ID test ----------
                 self.x = self.e_in[e_idx]
                 self.y = self.e_target[e_idx]
                 self.case = self.e_case[e_idx]
-                # self.path = self.file_expert[e_idx.numpy()]
 
             else:
+                # ---------- OOD test ----------
+                if self.neg_case_filter is not None:
+                    mask = torch.zeros(len(self.neg_scenario), dtype=torch.bool)
 
-                self.x = self.n_in
-                self.y = self.n_target
-                self.case = self.n_case
-                # self.path = self.file_negative
+                    for i, scen in enumerate(self.neg_scenario):
+                        if scen in self.neg_case_filter:
+                            mask[i] = True
+
+                    self.x = self.n_in[mask]
+                    self.y = self.n_target[mask]
+                    self.case = self.n_case[mask]
+                else:
+                    # all negative
+                    self.x = self.n_in
+                    self.y = self.n_target
+                    self.case = self.n_case
 
             self.e_label = e_idx.size(0)
+
 
 
     def normaize(self):
@@ -361,9 +369,3 @@ class MixQuality():
 
 if __name__ == '__main__':
     m = MixQuality(root='../Data/',train=True,neg=False)
-
-    # print(m.e_in.size())
-    # print(m.n_in.size())
-
-    # print(m.x[0, :15])
-    # print(m.y[1000])

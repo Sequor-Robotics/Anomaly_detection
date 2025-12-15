@@ -297,7 +297,7 @@ def resampling(raw_data):
         # Laser Down-Sampling
         angle_min_new = (-100) * np.pi / 180  # angle_new_min
         angle_max_new =  (100) * np.pi / 180  # angle_new_max
-        N_new_samples = 32                    # number of newly down-sampled data points
+        N_new_samples = 128                   # number of newly down-sampled data points
 
         # new angles grid
         new_angles = np.linspace(angle_min_new, angle_max_new, N_new_samples)
@@ -315,7 +315,7 @@ def resampling(raw_data):
         # normalization
         MAX_DIST = 5
         new_ranges = np.clip(new_ranges_raw, 0, MAX_DIST)
-        new_ranges = (1 - new_ranges) / MAX_DIST
+        new_ranges = 1 - ( new_ranges / MAX_DIST )
 
         # Downsampled
         angles = new_angles

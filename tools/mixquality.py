@@ -43,8 +43,13 @@ def build_state(frame_data: dict):
     lin_vel = frame_data.get("lin_vel")  or [0.0, 0.0]
     lin_acc = frame_data.get("lin_acc")  or [0.0, 0.0]
     ang_vel = frame_data.get("ang_vel")
+
     if ang_vel is None:
         ang_vel = 0.0
+
+    obj_pos = frame_data.get("obj_pos")
+    if obj_pos is None or not isinstance(obj_pos, (list, tuple)) or len(obj_pos) != 2:
+        obj_pos = [0.0, 0.0]
 
     # scan data
     scan = frame_data.get("scan") or []
@@ -62,6 +67,7 @@ def build_state(frame_data: dict):
         float(lin_vel[0]), float(lin_vel[1]),
         float(lin_acc[0]), float(lin_acc[1]),
         float(ang_vel),
+        float(obj_pos[0]), float(obj_pos[1]),
     ]
     state_vec.extend(ranges_list)
 
@@ -177,6 +183,10 @@ def load_negative_dataset(path, frame, neg_data_name_list):
     file = []
     neg_scenario = []
 
+    neg_trial = []   # 
+    neg_seq   = []   # 
+
+
     dummy_case = [0.0] * 7
 
     for data_path in neg_data_name_list:
@@ -220,6 +230,9 @@ def load_negative_dataset(path, frame, neg_data_name_list):
             case.append(dummy_case)
 
             neg_scenario.append(scenario_prefix)
+            neg_trial.append(data_path)  # (neg_xxx_3)
+            neg_seq.append(seq)          # window start frame
+
 
     if len(rt) == 0:
         print("[load_negative_dataset] Warning: no negative data loaded.")
@@ -236,7 +249,7 @@ def load_negative_dataset(path, frame, neg_data_name_list):
     case_tensor = torch.FloatTensor(case)
     file_arr    = np.asarray(file)
 
-    return rt_tensor, act_tensor, case_tensor, file_arr, neg_scenario
+    return rt_tensor, act_tensor, case_tensor, file_arr, neg_scenario, neg_trial, neg_seq
 
 
 
@@ -252,10 +265,10 @@ class MixQuality():
         self.train = train
         self.neg   = neg
 
-        self.exp_list, self.neg_list = get_name_lists(root, self.train)
+        self.exp_list, self.neg_list = get_name_lists(root)
         
         self.e_in, self.e_target, self.e_case, self.file_expert   = load_expert_dataset(root,frame,self.exp_list)
-        self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario = load_negative_dataset(root,frame,self.neg_list)
+        self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario, self.neg_trial, self.neg_seq = load_negative_dataset(root,frame,self.neg_list)
         
         """
         e_in     : Expert input data samples
@@ -270,6 +283,8 @@ class MixQuality():
         # True = Z-score standardization
         # False = min-max
         self.norm = norm
+
+        self.frame = frame
 
         in_list = []
         t_list  = []
@@ -331,41 +346,122 @@ class MixQuality():
 
             else:
                 # ---------- OOD test ----------
-                if self.neg_case_filter is not None:
+                if self.neg_case_filter is not None and len(self.neg_case_filter) > 0:
                     mask = torch.zeros(len(self.neg_scenario), dtype=torch.bool)
 
                     for i, scen in enumerate(self.neg_scenario):
-                        if scen in self.neg_case_filter:
+                        if (scen in self.neg_case_filter) or (self.neg_trial[i] in self.neg_case_filter):
                             mask[i] = True
 
                     self.x = self.n_in[mask]
                     self.y = self.n_target[mask]
                     self.case = self.n_case[mask]
+
+                    self.neg_trial_sel = [t for t, keep in zip(self.neg_trial, mask.tolist()) if keep]
+                    self.neg_seq_sel   = [s for s, keep in zip(self.neg_seq,   mask.tolist()) if keep]
                 else:
                     # all negative
                     self.x = self.n_in
                     self.y = self.n_target
                     self.case = self.n_case
 
+                    self.neg_trial_sel = self.neg_trial
+                    self.neg_seq_sel   = self.neg_seq
+
+
             self.e_label = e_idx.size(0)
 
 
+    # def normaize(self):
+    #     # except LiDAR data
+    #     if self.norm:
+    #         self.x = (self.x - self.mean_in)/(self.std_in)
+    #         self.y = (self.y - self.mean_t)/(self.std_t)
+    #         self.x[self.x != self.x] = 0
+    #         self.y[self.y != self.y] = 0
+    #     else:
+    #         self.max_in = torch.max(torch.cat((self.e_in,self.n_in),dim=0),dim=0)[0]
+    #         self.min_in = torch.min(torch.cat((self.e_in,self.n_in),dim=0),dim=0)[0]
+    #         self.max_t = torch.max(torch.cat((self.e_target,self.n_target),dim=0),dim=0)[0]
+    #         self.min_t = torch.min(torch.cat((self.e_target,self.n_target),dim=0),dim=0)[0]
+    #         self.x = (self.x - self.min_in)/(self.max_in-self.min_in)
+    #         self.y = (self.y - self.min_t)/(self.max_t-self.min_t)
 
     def normaize(self):
+        """
+        Input x shape: (N, D_in) where D_in = frame * (5 + lidar_dim)
+        - first 5 dims per frame: non-lidar (lin_vel2, lin_acc2, ang_vel1)
+        - remaining dims per frame: lidar ranges (already normalized in *_prcd.json)
+        Target y: (N, 3) -> normalize as usual
+        """
+        # --- infer per-frame structure ---
+        D = self.x.size(1)
+        F = self.frame
+
+        if F <= 0 or (D % F) != 0:
+            raise ValueError(f"[normaize] Invalid shapes: D_in={D}, frame={F}")
+
+        per_frame_dim = D // F
+        non_lidar_dim = 7
+        lidar_dim = per_frame_dim - non_lidar_dim
+
+        if lidar_dim < 0:
+            raise ValueError(f"[normaize] per_frame_dim={per_frame_dim} < non_lidar_dim={non_lidar_dim}")
+
+        # --- indices for non-lidar dims across all frames ---
+        idx = []
+        for i in range(F):
+            base = i * per_frame_dim
+            idx.extend(range(base, base + non_lidar_dim))
+        idx = torch.tensor(idx, dtype=torch.long, device=self.x.device)
+
+        eps = 1e-8
+
         if self.norm:
-            self.x = (self.x - self.mean_in)/(self.std_in)
-            self.y = (self.y - self.mean_t)/(self.std_t)
+            # Z-score ONLY on non-lidar dims
+            self.x[:, idx] = (self.x[:, idx] - self.mean_in[idx]) / (self.std_in[idx] + eps)
+
+            # target y is NOT lidar -> normalize as usual
+            self.y = (self.y - self.mean_t) / (self.std_t + eps)
+
+            # NaN guard
             self.x[self.x != self.x] = 0
             self.y[self.y != self.y] = 0
+
         else:
-            self.max_in = torch.max(torch.cat((self.e_in,self.n_in),dim=0),dim=0)[0]
-            self.min_in = torch.min(torch.cat((self.e_in,self.n_in),dim=0),dim=0)[0]
-            self.max_t = torch.max(torch.cat((self.e_target,self.n_target),dim=0),dim=0)[0]
-            self.min_t = torch.min(torch.cat((self.e_target,self.n_target),dim=0),dim=0)[0]
-            self.x = (self.x - self.min_in)/(self.max_in-self.min_in)
-            self.y = (self.y - self.min_t)/(self.max_t-self.min_t)
+            # Min-max ONLY on non-lidar dims (robustly compute min/max from available tensors)
+            in_list = []
+            t_list = []
+            if self.e_in.numel() > 0:
+                in_list.append(self.e_in)
+                t_list.append(self.e_target)
+            if self.n_in.numel() > 0 and self.n_in.size(1) == self.e_in.size(1):
+                in_list.append(self.n_in)
+                t_list.append(self.n_target)
+
+            all_in = torch.cat(in_list, dim=0)
+            all_t = torch.cat(t_list, dim=0)
+
+            max_in = all_in.max(dim=0)[0]
+            min_in = all_in.min(dim=0)[0]
+            max_t = all_t.max(dim=0)[0]
+            min_t = all_t.min(dim=0)[0]
+
+            denom_in = (max_in[idx] - min_in[idx]) + eps
+            self.x[:, idx] = (self.x[:, idx] - min_in[idx]) / denom_in
+
+            denom_t = (max_t - min_t) + eps
+            self.y = (self.y - min_t) / denom_t
+
+            # NaN guard
+            self.x[self.x != self.x] = 0
+            self.y[self.y != self.y] = 0
 
 
 
 if __name__ == '__main__':
     m = MixQuality(root='../Data/',train=True,neg=False)
+
+    print(m.x[0])
+    print(m.x[100])
+    print(m.x[1000])

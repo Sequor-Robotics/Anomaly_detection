@@ -295,8 +295,8 @@ def resampling(raw_data):
         raw_angles = angle_min + np.arange(raw_ranges.shape[0], dtype=np.float64) * angle_inc
 
         # Laser Down-Sampling
-        angle_min_new = (-100) * np.pi / 180  # angle_new_min
-        angle_max_new =  (100) * np.pi / 180  # angle_new_max
+        angle_min_new = (-120) * np.pi / 180  # angle_new_min
+        angle_max_new =  (120) * np.pi / 180  # angle_new_max
         N_new_samples = 128                   # number of newly down-sampled data points
 
         # new angles grid

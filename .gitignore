@@ -3,3 +3,4 @@ Data/
 __pycache__/
 res/
 script/
+label_tool.py

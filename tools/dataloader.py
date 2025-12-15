@@ -14,6 +14,9 @@ class mixquality_dataset(data.Dataset):
         self.case = mix.case
         # self.path = mix.path
 
+        self.neg_seq = getattr(mix, "neg_seq_sel", None)
+        self.neg_trial = getattr(mix, "neg_trial_sel", None)
+
     def __getitem__(self, index):
         data, target = self.x[index], self.y[index]
         return data,target

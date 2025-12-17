@@ -47,15 +47,9 @@ def plot_run(run_name, mode, exp_id):
     scenario_aupr  = data.get("scenario_aupr", {})
 
     if mode == 'mdn':
-        method = ['epis_', 'alea_', 'pi_entropy_']
+        method = ['epis_']
     elif mode == 'vae':
-        method = ['recon_', 'kl_']
-    elif mode == 'vqvae':
-        method = ['recon_', 'vq_']
-    elif mode == 'wae':
-        method = ['recon_', 'mmd_']
-    elif mode == 'rae':
-        method = ['recon_', 'zreg_']
+        method = ['recon_']
     else:
         raise NotImplementedError
 

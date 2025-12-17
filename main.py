@@ -28,13 +28,11 @@ parser.add_argument('--frame', type=int, default=1)
 parser.add_argument('--exp_case', type=int, nargs='+', default=[1, 2, 3])
 parser.add_argument('--neg_case', type=str, nargs='+', default=None, help='negative scenario or trial names')
 
-
-
-parser.add_argument('--epoch', type=int, default=200)
+parser.add_argument('--epoch', type=int, default=150)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--wd', type=float, default=1e-4)
-parser.add_argument('--dropout', type=float, default=0.25)
+parser.add_argument('--dropout', type=float, default=0.25)     # 0.25
 parser.add_argument('--lr_rate', type=float, default=0.75)    # 0.9
 parser.add_argument('--lr_step', type=int, default=25)        # 50
 
@@ -57,7 +55,7 @@ parser.add_argument('--commitment_cost', type=float, default=0.25)
 args = parser.parse_args()
 
 # ================= Seed / Device =================
-SEED = 0
+SEED = 42
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
 random.seed(SEED)
@@ -109,6 +107,67 @@ def discover_neg_scenarios(project_root: str):
 
     return neg_map
 
+def discover_used_data_dirs(project_root: str, exp_case=None, neg_case=None):
+    """
+    exp_case: [1,2,3] 같은 case id 리스트(또는 None)
+    neg_case: None / [1,2] 같은 id 리스트 / ["neg_xxx", "neg_xxx_3"] 같은 이름 리스트도 대응
+    """
+    data_root = Path(project_root).resolve() / "Data"
+    if not data_root.is_dir():
+        return {"expert_dirs": [], "neg_dirs": [], "data_root": str(data_root)}
+
+    expert_dirs_all, neg_dirs_all = [], []
+
+    for d in data_root.iterdir():
+        if not d.is_dir():
+            continue
+        if d.name.startswith("expert"):
+            expert_dirs_all.append(d.name)
+        elif d.name.startswith("neg"):
+            neg_dirs_all.append(d.name)
+
+    # ---- expert filter (by trailing _N) ----
+    expert_dirs = []
+    for name in expert_dirs_all:
+        m = re.search(r'_(\d+)$', name)
+        if m is None:
+            continue
+        cid = int(m.group(1))
+        if (exp_case is None) or (cid in exp_case):
+            expert_dirs.append(name)
+
+    # ---- neg filter (id list OR name list) ----
+    neg_dirs = neg_dirs_all[:]
+    if neg_case is not None:
+        # neg_case가 int들이면 case id로 필터, 문자열이면 이름/프리픽스로 필터
+        try:
+            # 예: [1,2,3] 또는 ["1","2"]
+            ids = {int(x) for x in neg_case}
+            tmp = []
+            for name in neg_dirs:
+                m = re.search(r'_(\d+)$', name)
+                if m and int(m.group(1)) in ids:
+                    tmp.append(name)
+            neg_dirs = tmp
+        except Exception:
+            # 예: ["neg_turnleft", "neg_turnleft_3"] 형태
+            keep = set(neg_case)
+            tmp = []
+            for name in neg_dirs:
+                prefix = re.sub(r'_\d+$', '', name)
+                if (name in keep) or (prefix in keep):
+                    tmp.append(name)
+            neg_dirs = tmp
+
+    return {
+        "data_root": str(data_root),
+        "expert_dirs": sorted(expert_dirs),
+        "neg_dirs": sorted(neg_dirs),
+        "expert_dirs_all": sorted(expert_dirs_all),
+        "neg_dirs_all": sorted(neg_dirs_all),
+    }
+
+
 
 # ================= Solver (TRAIN + ALL NEG) =================
 Solver = solver(args, device=device, SEED=SEED)
@@ -139,6 +198,19 @@ f = open(txt_path, 'w')
 print_n_txt(f, 'Text name: ' + txt_path)
 print_n_txt(f, str(args))
 
+# ================= Record actually used Data scenario dirs =================
+exp_dirs_used = sorted(set(getattr(Solver.test_e_dataset, "exp_dirs", []) or []))
+neg_dirs_used = sorted(set(getattr(Solver.test_n_dataset, "neg_dirs", []) or []))
+
+print_n_txt(f, "\n[DATA USED]")
+print_n_txt(f, f"Expert dirs used (loaded): {exp_dirs_used}")
+print_n_txt(f, f"Negative dirs used (loaded): {neg_dirs_used}\n")
+
+print_n_txt(f, f"[EXPERT TRAIN SCENARIOS] {Solver.train_dataset.exp_train_scenarios}")
+print_n_txt(f, f"[EXPERT TEST  SCENARIOS] {Solver.test_e_dataset.exp_test_scenarios}")
+
+
+
 
 # ================= Train =================
 train_l2, test_l2 = Solver.train_func(f)
@@ -166,6 +238,8 @@ trained_state = Solver.model.state_dict()
 scenario_eval = {}
 scenario_auroc = {}
 scenario_aupr = {}
+scenario_dirs_used = {}   # scen_name -> [trial dir names]
+trial_dirs_used = []      # trial_name 리스트
 
 trial_score_plots = {}   # summary to log.json
 ood_plot_dir = os.path.join(DIR, "ood_score_plots")
@@ -207,6 +281,8 @@ for scen_name, info in neg_scenarios.items():
     }
     scenario_auroc[scen_name] = a1
     scenario_aupr[scen_name] = a2
+
+    scenario_dirs_used[scen_name] = sorted([Path(p).name for p in info["dirs"]])
 
     # # ================= Trial-wise OOD score plot =================
     # # trial dirs: 예) .../Data/neg_turnleft_1, .../Data/neg_turnleft_2 ...
@@ -291,6 +367,20 @@ log_json["scenario_ood_eval"] = scenario_eval
 log_json["scenario_auroc"] = scenario_auroc
 log_json["scenario_aupr"] = scenario_aupr
 # log_json["trial_ood_score_plots"] = trial_score_plots
+
+log_json["data_used"] = {
+    "expert_dirs_loaded": exp_dirs_used,
+    "neg_dirs_loaded": neg_dirs_used,
+    "neg_scenario_trials": scenario_dirs_used,   # scenario별 trial 폴더 목록
+    # "neg_trials_evaluated": trial_dirs_used,   # trial-wise 실제 평가한 trial 이름(원하면)
+}
+
+log_json["expert_split"] = {
+    "train_scenarios": getattr(Solver.train_dataset, "exp_train_scenarios", None),
+    "test_scenarios":  getattr(Solver.test_e_dataset, "exp_test_scenarios", None),
+    "stats": getattr(Solver.train_dataset, "exp_split_stats", None),
+}
+
 
 
 with open(log_path, 'w') as jf:

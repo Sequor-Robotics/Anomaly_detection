@@ -91,12 +91,14 @@ def load_expert_dataset(path, frame, exp_data_name_list):
     act  = []
     case = []
     file = []
+    exp_scenario = []
 
     # 기존 R3 코드에서는 road/hazard 정보를 7차원으로 넣었으므로
     # 구조를 맞추기 위해 일단 7차원 dummy 0벡터 사용
     dummy_case = [0.0] * 7
 
     for data_path in exp_data_name_list:
+        scenario = re.sub(r'_\d+$', '', data_path)
         scenario_root = Path(path) / data_path
         if not scenario_root.exists():
             print(f"[load_expert_dataset] Warning: {scenario_root} not found, skip.")
@@ -122,6 +124,7 @@ def load_expert_dataset(path, frame, exp_data_name_list):
 
         # Sliding window
         for seq in range(0, n_frames - frame + 1):
+            exp_scenario.append(scenario)
             data_vec = []
             target_vec = []
 
@@ -160,7 +163,7 @@ def load_expert_dataset(path, frame, exp_data_name_list):
     case_tensor = torch.FloatTensor(case)
     file_arr    = np.asarray(file)
 
-    return rt_tensor, act_tensor, case_tensor, file_arr
+    return rt_tensor, act_tensor, case_tensor, file_arr, exp_scenario
 
 
 
@@ -267,7 +270,7 @@ class MixQuality():
 
         self.exp_list, self.neg_list = get_name_lists(root)
         
-        self.e_in, self.e_target, self.e_case, self.file_expert   = load_expert_dataset(root,frame,self.exp_list)
+        self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list)
         self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario, self.neg_trial, self.neg_seq = load_negative_dataset(root,frame,self.neg_list)
         
         """
@@ -279,6 +282,7 @@ class MixQuality():
         
         self.e_size = self.e_in.size(0)
         self.n_size = self.n_in.size(0)
+
         
         # True = Z-score standardization
         # False = min-max
@@ -316,33 +320,61 @@ class MixQuality():
         """
 
         self.load()
-        self.normaize()
+        self.normalize()
+
 
     def load(self):
-        rand_e_idx = torch.randperm(self.e_size)
+        # =====================================================
+        # Expert scenario-wise 8:2 split
+        # =====================================================
+        rng = torch.Generator()
+        rng.manual_seed(0)
 
+        # scenario -> list of expert sample indices
+        scen_to_idx = {}
+        for i, scen in enumerate(self.exp_scenario):
+            scen_to_idx.setdefault(scen, []).append(i)
+
+        train_idx = []
+        test_idx = []
+
+        for scen, idx_list in scen_to_idx.items():
+            idx = torch.tensor(idx_list, dtype=torch.long)
+            perm = idx[torch.randperm(len(idx), generator=rng)]
+
+            n_train = int(len(perm) * 0.8)
+            # 보호 로직: 최소 1개는 train에 남김
+            if n_train <= 0:
+                n_train = max(1, len(perm) - 1)
+
+            train_idx.append(perm[:n_train])
+            test_idx.append(perm[n_train:])
+
+        train_idx = torch.cat(train_idx)
+        test_idx = torch.cat(test_idx)
+
+        # =====================================================
+        # TRAIN / TEST branching
+        # =====================================================
         if self.train:
             # ======================
             # TRAIN : expert only
             # ======================
-            e_idx = rand_e_idx[:int(self.e_size * 0.8)]
-
-            self.x = self.e_in[e_idx]
-            self.y = self.e_target[e_idx]
-            self.case = self.e_case[e_idx]
-            self.e_label = e_idx.size(0)
+            self.x = self.e_in[train_idx]
+            self.y = self.e_target[train_idx]
+            self.case = self.e_case[train_idx]
+            self.e_label = train_idx.size(0)
 
         else:
             # ======================
             # TEST
             # ======================
-            e_idx = rand_e_idx[int(self.e_size * 0.8):]
-
             if not self.neg:
                 # ---------- ID test ----------
-                self.x = self.e_in[e_idx]
-                self.y = self.e_target[e_idx]
-                self.case = self.e_case[e_idx]
+                self.x = self.e_in[test_idx]
+                self.y = self.e_target[test_idx]
+                self.case = self.e_case[test_idx]
+                self.e_label = test_idx.size(0)
 
             else:
                 # ---------- OOD test ----------
@@ -357,19 +389,27 @@ class MixQuality():
                     self.y = self.n_target[mask]
                     self.case = self.n_case[mask]
 
-                    self.neg_trial_sel = [t for t, keep in zip(self.neg_trial, mask.tolist()) if keep]
-                    self.neg_seq_sel   = [s for s, keep in zip(self.neg_seq,   mask.tolist()) if keep]
+                    self.neg_trial_sel = [
+                        t for t, keep in zip(self.neg_trial, mask.tolist()) if keep
+                    ]
+                    self.neg_seq_sel = [
+                        s for s, keep in zip(self.neg_seq, mask.tolist()) if keep
+                    ]
                 else:
-                    # all negative
+                    # ---------- all negative ----------
                     self.x = self.n_in
                     self.y = self.n_target
                     self.case = self.n_case
 
                     self.neg_trial_sel = self.neg_trial
-                    self.neg_seq_sel   = self.neg_seq
+                    self.neg_seq_sel = self.neg_seq
 
+                # ID label size는 유지 (기존 코드 의미)
+                self.e_label = test_idx.size(0)
 
-            self.e_label = e_idx.size(0)
+            self.exp_train_scenarios = sorted(set(self.exp_scenario[i] for i in train_idx.tolist()))
+            self.exp_test_scenarios  = sorted(set(self.exp_scenario[i] for i in test_idx.tolist()))
+
 
 
     # def normaize(self):
@@ -387,41 +427,49 @@ class MixQuality():
     #         self.x = (self.x - self.min_in)/(self.max_in-self.min_in)
     #         self.y = (self.y - self.min_t)/(self.max_t-self.min_t)
 
-    def normaize(self):
+    def normalize(self):
         """
-        Input x shape: (N, D_in) where D_in = frame * (5 + lidar_dim)
-        - first 5 dims per frame: non-lidar (lin_vel2, lin_acc2, ang_vel1)
-        - remaining dims per frame: lidar ranges (already normalized in *_prcd.json)
-        Target y: (N, 3) -> normalize as usual
+        Input x shape: (N, D_in) where D_in = frame * (7 + lidar_dim)
+        - per frame:
+            0~4 : z-normalization (or min-max when self.norm==0)
+            5~6 : divide by 5
+            7~  : LiDAR (keep as-is)
+        Target y: (N, 3) -> normalize as usual (z or min-max)
         """
-        # --- infer per-frame structure ---
         D = self.x.size(1)
         F = self.frame
 
         if F <= 0 or (D % F) != 0:
-            raise ValueError(f"[normaize] Invalid shapes: D_in={D}, frame={F}")
+            raise ValueError(f"[normalize] Invalid shapes: D_in={D}, frame={F}")
 
         per_frame_dim = D // F
         non_lidar_dim = 7
         lidar_dim = per_frame_dim - non_lidar_dim
 
         if lidar_dim < 0:
-            raise ValueError(f"[normaize] per_frame_dim={per_frame_dim} < non_lidar_dim={non_lidar_dim}")
+            raise ValueError(f"[normalize] per_frame_dim={per_frame_dim} < non_lidar_dim={non_lidar_dim}")
 
-        # --- indices for non-lidar dims across all frames ---
-        idx = []
+        # ---- build indices across frames ----
+        idx_z = []    # per-frame 0~4
+        idx_div = []  # per-frame 5~6
         for i in range(F):
             base = i * per_frame_dim
-            idx.extend(range(base, base + non_lidar_dim))
-        idx = torch.tensor(idx, dtype=torch.long, device=self.x.device)
+            idx_z.extend(range(base + 0, base + 5))  # 0,1,2,3,4
+            idx_div.extend(range(base + 5, base + 7))  # 5,6
+
+        idx_z = torch.tensor(idx_z, dtype=torch.long, device=self.x.device)
+        idx_div = torch.tensor(idx_div, dtype=torch.long, device=self.x.device)
 
         eps = 1e-8
 
         if self.norm:
-            # Z-score ONLY on non-lidar dims
-            self.x[:, idx] = (self.x[:, idx] - self.mean_in[idx]) / (self.std_in[idx] + eps)
+            # 0~4: z-score
+            self.x[:, idx_z] = (self.x[:, idx_z] - self.mean_in[idx_z]) / (self.std_in[idx_z] + eps)
 
-            # target y is NOT lidar -> normalize as usual
+            # 5~6: divide by 5 (NO z-score)
+            self.x[:, idx_div] = 1 - ( self.x[:, idx_div] / 5.0 )
+
+            # target y: z-score (as usual)
             self.y = (self.y - self.mean_t) / (self.std_t + eps)
 
             # NaN guard
@@ -429,7 +477,7 @@ class MixQuality():
             self.y[self.y != self.y] = 0
 
         else:
-            # Min-max ONLY on non-lidar dims (robustly compute min/max from available tensors)
+            # min-max for 0~4 only, divide-by-5 for 5~6, LiDAR unchanged
             in_list = []
             t_list = []
             if self.e_in.numel() > 0:
@@ -447,9 +495,14 @@ class MixQuality():
             max_t = all_t.max(dim=0)[0]
             min_t = all_t.min(dim=0)[0]
 
-            denom_in = (max_in[idx] - min_in[idx]) + eps
-            self.x[:, idx] = (self.x[:, idx] - min_in[idx]) / denom_in
+            # 0~4: min-max
+            denom_in_z = (max_in[idx_z] - min_in[idx_z]) + eps
+            self.x[:, idx_z] = (self.x[:, idx_z] - min_in[idx_z]) / denom_in_z
 
+            # 5~6: divide by 5 (NO min-max)
+            self.x[:, idx_div] = 1 - ( self.x[:, idx_div] / 5.0 )
+
+            # target y: min-max (as usual)
             denom_t = (max_t - min_t) + eps
             self.y = (self.y - min_t) / denom_t
 
@@ -462,6 +515,5 @@ class MixQuality():
 if __name__ == '__main__':
     m = MixQuality(root='../Data/',train=True,neg=False)
 
-    print(m.x[0])
-    print(m.x[100])
-    print(m.x[1000])
+    for i in range(200):
+        print(m.x[i][5:7])

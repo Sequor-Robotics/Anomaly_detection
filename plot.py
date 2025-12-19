@@ -87,8 +87,8 @@ def plot_run(run_name, mode, exp_id):
             ood_s = np.asarray(ood_eval_cur[m])
 
 
-            axes[i+1, 0].hist(id_s, 30, alpha=0.6, density=True, label='ID')
-            axes[i+1, 0].hist(ood_s, 30, alpha=0.6, density=True, label='OOD')
+            axes[i+1, 0].hist(id_s,  100, alpha=0.5, density=True, label='ID')
+            axes[i+1, 0].hist(ood_s, 100, alpha=0.5, density=True, label='OOD')
             axes[i+1, 0].legend()
 
             # ROC

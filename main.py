@@ -17,6 +17,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+def _trial_sort_key(name: str):
+    """
+    Sort by trailing number if exists: neg_jerk_6 -> (base, 6)
+    Fallback: (name, inf) so non-numbered go last.
+    """
+    m = re.search(r"_(\d+)$", name)
+    if m:
+        return (name[:m.start()], int(m.group(1)))
+    return (name, float("inf"))
+
 
 # ================= Argument Parser =================
 parser = argparse.ArgumentParser()
@@ -28,13 +38,13 @@ parser.add_argument('--frame', type=int, default=1)
 parser.add_argument('--exp_case', type=int, nargs='+', default=[1, 2, 3])
 parser.add_argument('--neg_case', type=str, nargs='+', default=None, help='negative scenario or trial names')
 
-parser.add_argument('--epoch', type=int, default=150)
+parser.add_argument('--epoch', type=int, default=120)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--wd', type=float, default=1e-4)
-parser.add_argument('--dropout', type=float, default=0.25)     # 0.25
-parser.add_argument('--lr_rate', type=float, default=0.75)    # 0.9
-parser.add_argument('--lr_step', type=int, default=25)        # 50
+parser.add_argument('--dropout', type=float, default=0.25)    # 0.25
+parser.add_argument('--lr_rate', type=float, default=0.85)    # 0.9
+parser.add_argument('--lr_step', type=int, default=10)        # 50
 
 # MDN
 parser.add_argument('--k', type=int, default=10)
@@ -91,7 +101,7 @@ def discover_neg_scenarios(project_root: str):
     for d in data_root.iterdir():
         if not d.is_dir():
             continue
-        if not d.name.startswith("neg"):
+        if not d.name.startswith("neg_"):
             continue
 
         m = re.search(r'_(\d+)$', d.name)
@@ -250,21 +260,14 @@ for scen_name, info in neg_scenarios.items():
 
     args_s = argparse.Namespace(**vars(args))
     args_s.root = args.root
-    args_s.neg_case = [scen_name]
+    args_s.neg_case = [Path(p).name for p in info["dirs"]]
 
     Solver_s = solver(args_s, device=device, SEED=SEED)
     Solver_s.init_param()
     Solver_s.model.load_state_dict(trained_state)
 
-    print(
-    f"[CHECK] {scen_name} | neg_case={args_s.neg_case} | "
-    f"N_neg_samples={len(Solver_s.test_n_dataset)}")
-
-    x = Solver_s.test_n_dataset.x
-    print(
-        f"[CHECK DATA] {scen_name} | "
-        f"x_mean={x.mean().item():.6f}, x_std={x.std().item():.6f}"
-    )
+    trials_sorted = sorted(set(args_s.neg_case), key=_trial_sort_key)
+    print(f"[CHECK] scenario={scen_name} | trials={trials_sorted} | N={len(Solver_s.test_n_dataset)}")
 
     id_eval_s = Solver_s.eval_func(Solver_s.test_e_iter, device)
     ood_eval_s = Solver_s.eval_func(Solver_s.test_n_iter, device)

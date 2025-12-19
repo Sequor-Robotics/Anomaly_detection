@@ -5,7 +5,13 @@ import argparse
 import os
 import matplotlib.pyplot as plt
 import json
+from typing import Callable, Literal
+try:
+    from scipy.interpolate import CubicSpline
+except Exception:
+    CubicSpline = None
 
+InterpMethod = Literal["linear", "poly", "spline"]
 
 ##### Data loading
 
@@ -222,50 +228,186 @@ def linear_interpolation(t1, y1, t2, y2, t_star):
     y_star = y1 + ( y2- y1 )/( t2 - t1 )*( t_star - t1 )
     return y_star
 
-def interpolate_time_series(t_array: np.ndarray,
-                            y_array: np.ndarray,
-                            t_star: float):
+InterpMethod = Literal["linear", "poly", "spline"]
 
-    t_array = np.asarray(t_array)
+
+def _dedupe_sorted_time_series(t: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Remove duplicate timestamps (keep first occurrence). Assumes `t` is sorted."""
+    if t.size == 0:
+        return t, y
+    uniq_t, first_idx = np.unique(t, return_index=True)
+    order = np.argsort(first_idx)
+    sel = first_idx[order]
+    return t[sel], y[sel]
+
+
+def polynomial_interpolation(
+    t_array: np.ndarray,
+    y_array: np.ndarray,
+    t_star: float,
+    degree: int = 3,
+    window: int = 5,
+):
+    """Local polynomial interpolation around `t_star`."""
+    t_array = np.asarray(t_array, dtype=float)
     y_array = np.asarray(y_array)
 
     N = t_array.shape[0]
     if N == 0:
         return None
-
-    idx1, idx2 = find_bracket_indices(t_array, t_star)
-
-    ### Interpolation case
-    if idx1 is not None and idx2 is not None:
-        t1 = t_array[idx1]
-        t2 = t_array[idx2]
-        y1 = y_array[idx1]
-        y2 = y_array[idx2]
-        return linear_interpolation(t1, y1, t2, y2, t_star)
-
-    ### Extrapolation case
-    if N == 1:   # single data point (non-timeserial variable)
+    if N == 1:
         return y_array[0]
 
-    # t_star < t_array[0]
-    if idx1 is None and idx2 is not None:
-        t1 = t_array[0]
-        t2 = t_array[1]
-        y1 = y_array[0]
-        y2 = y_array[1]
-        return linear_interpolation(t1, y1, t2, y2, t_star)  # Use t[0], t[1]
+    # Ensure sorted by time
+    if N >= 2 and np.any(np.diff(t_array) < 0):
+        order = np.argsort(t_array)
+        t_array = t_array[order]
+        y_array = y_array[order]
 
-    # t_star > t_array[-1]
-    if idx1 is not None and idx2 is None:
-        t1 = t_array[-2]
-        t2 = t_array[-1]
-        y1 = y_array[-2]
-        y2 = y_array[-1]
-        return linear_interpolation(t1, y1, t2, y2, t_star)  # Use t[-2], t[-1]
+    t_array, y_array = _dedupe_sorted_time_series(t_array, y_array)
+    N = t_array.shape[0]
+    if N == 1:
+        return y_array[0]
 
-    return None
+    idx_right = np.searchsorted(t_array, t_star, side="right")
+    half = window // 2
+    start = max(0, idx_right - half)
+    end = min(N, start + window)
+    start = max(0, end - window)
 
-def resampling(raw_data):
+    t_win = t_array[start:end]
+    y_win = y_array[start:end]
+
+    uniq_t = np.unique(t_win)
+    if uniq_t.size < 2:
+        return y_win[0]
+    max_deg = max(1, min(degree, uniq_t.size - 1))
+
+    if y_win.ndim == 1:
+        coef = np.polyfit(t_win, y_win, deg=max_deg)
+        return np.polyval(coef, t_star)
+
+    D = y_win.shape[1]
+    out = np.empty((D,), dtype=float)
+    for d in range(D):
+        coef = np.polyfit(t_win, y_win[:, d], deg=max_deg)
+        out[d] = np.polyval(coef, t_star)
+    return out
+
+
+def spline_interpolation(t_array: np.ndarray, y_array: np.ndarray, t_star: float):
+    """Cubic spline interpolation using SciPy if available."""
+    if CubicSpline is None:
+        raise RuntimeError("SciPy is required for spline interpolation but is not available.")
+
+    t_array = np.asarray(t_array, dtype=float)
+    y_array = np.asarray(y_array)
+
+    N = t_array.shape[0]
+    if N == 0:
+        return None
+    if N == 1:
+        return y_array[0]
+
+    if np.any(np.diff(t_array) < 0):
+        order = np.argsort(t_array)
+        t_array = t_array[order]
+        y_array = y_array[order]
+
+    t_array, y_array = _dedupe_sorted_time_series(t_array, y_array)
+    if t_array.shape[0] == 1:
+        return y_array[0]
+
+    cs = CubicSpline(t_array, y_array, axis=0, extrapolate=True)
+    return cs(t_star)
+
+
+def interpolate_time_series(
+    t_array: np.ndarray,
+    y_array: np.ndarray,
+    t_star: float,
+    method: InterpMethod = "linear",
+):
+    method = str(method).lower().strip()
+    if method not in ("linear", "poly", "spline"):
+        raise ValueError(f"Unknown interpolation method: {method}. Use one of: linear|poly|spline")
+
+    if method == "poly":
+        return polynomial_interpolation(t_array, y_array, t_star)
+
+    if method == "spline":
+        return spline_interpolation(t_array, y_array, t_star)
+
+    # ---- 기존 linear 로직 (원래 코드 내용 유지) ----
+    t_array = np.asarray(t_array)
+    y_array = np.asarray(y_array)
+
+    # Find the closest time index. (= right side)
+    idx_r = np.searchsorted(t_array, t_star, side="right")
+
+    # If timestamp is outside the array range, return None
+    if idx_r == 0:
+        return y_array[0]
+    if idx_r >= len(t_array):
+        return y_array[-1]
+
+    idx_l = idx_r - 1
+
+    # interpolation
+    t1 = t_array[idx_l]
+    t2 = t_array[idx_r]
+    y1 = y_array[idx_l]
+    y2 = y_array[idx_r]
+
+    # guard (avoid div by zero)
+    if t2 == t1:
+        return y1
+
+    y_star = y1 + (y2 - y1) / (t2 - t1) * (t_star - t1)
+    return y_star
+
+def make_interpolator(
+    t_array: np.ndarray,
+    y_array: np.ndarray,
+    method: InterpMethod,
+) -> Callable[[float], np.ndarray | float | None]:
+    """Create a callable interpolator for repeated queries.
+
+    For spline, builds a CubicSpline once. For linear/poly, dispatches per-query.
+    """
+    method = str(method).lower().strip()
+
+    if method == "spline":
+        if CubicSpline is None:
+            raise RuntimeError("SciPy is required for spline interpolation but is not available.")
+
+        t = np.asarray(t_array, dtype=float)
+        y = np.asarray(y_array)
+
+        if t.size == 0:
+            return lambda _ts: None
+        if t.size == 1:
+            v = y[0]
+            return lambda _ts, _v=v: _v
+
+        if np.any(np.diff(t) < 0):
+            order = np.argsort(t)
+            t = t[order]
+            y = y[order]
+
+        t, y = _dedupe_sorted_time_series(t, y)
+        if t.size == 1:
+            v = y[0]
+            return lambda _ts, _v=v: _v
+
+        cs = CubicSpline(t, y, axis=0, extrapolate=True)
+        return lambda ts, _cs=cs: _cs(ts)
+
+    # linear / poly
+    return lambda ts: interpolate_time_series(t_array, y_array, ts, method=method)
+
+
+def resampling(raw_data, method: InterpMethod):
 
     raw_laser = raw_data["scan_frames"]
     raw_imu   = raw_data["imu"]
@@ -278,10 +420,17 @@ def resampling(raw_data):
     time_stamp_odom = raw_odom["t"]
 
     imu_lin_acc = raw_imu["lin_acc"][:, :2]    # (ax, ay)
-    imu_ang_vel = raw_imu["ang_vel"][:, 2]     # yaw rate -- # [NOTE] SLAM or IMU ??? ... Use better cue
+    imu_ang_vel = raw_imu["ang_vel"][:, 2]     # yaw rate -- # [NOTE] IMU
 
     odom_pos    = raw_odom["pos"][:, :2]       # (px, py)
     odom_linvel = raw_odom["lin_vel"][:, :2]   # (vx, vy)
+
+    # Build interpolators once (important for spline)
+    imu_lin_acc_fn = make_interpolator(time_stamp_imu, imu_lin_acc, method)
+    imu_ang_vel_fn = make_interpolator(time_stamp_imu, imu_ang_vel, method)
+    odom_pos_fn = make_interpolator(time_stamp_odom, odom_pos, method)
+    odom_linvel_fn = make_interpolator(time_stamp_odom, odom_linvel, method)
+
 
     resampled_frames = []
 
@@ -321,14 +470,14 @@ def resampling(raw_data):
         angles = new_angles
         ranges = new_ranges
 
-
         # IMU
-        lin_acc_star = interpolate_time_series(time_stamp_imu, imu_lin_acc, ts)
-        ang_vel_star = interpolate_time_series(time_stamp_imu, imu_ang_vel, ts)
+        lin_acc_star = imu_lin_acc_fn(ts)
+        ang_vel_star = imu_ang_vel_fn(ts)
 
         # Odom
-        pos_star     = interpolate_time_series(time_stamp_odom, odom_pos, ts)
-        lin_vel_star = interpolate_time_series(time_stamp_odom, odom_linvel, ts)
+        pos_star     = odom_pos_fn(ts)
+        lin_vel_star = odom_linvel_fn(ts)
+
 
         frame_data = {
             "timestamp": ts,
@@ -343,13 +492,6 @@ def resampling(raw_data):
         resampled_frames.append(frame_data)
 
     return resampled_frames
-
-
-
-##### Processing
-# [NOTE] Negative dataset (near obstacles) .. need to cut some data b/c robot got far away from racks while traversing corridors during data collection
-
-
 
 ##### Export
 
@@ -434,7 +576,21 @@ def create_image( positions, d, frames, scenario_dir: str | Path, save_img: bool
         plt.tight_layout()
         plt.savefig( out_path )
 
-def export_frames_to_json(frames, scenario_dir: str | Path, save_json: bool = False):
+def get_processed_json_path(scenario_dir: str | Path, method: InterpMethod) -> Path:
+    """Compute output path like: {scenario_name}_prcd_{method}.json"""
+    scenario_path = Path(scenario_dir).resolve()
+
+    if scenario_path.name.endswith("_parsed"):
+        scenario_root = scenario_path.parent
+    else:
+        scenario_root = scenario_path
+
+    scenario_name = scenario_root.name
+    method = str(method).lower().strip()
+    return scenario_root / f"{scenario_name}_prcd_{method}.json"
+
+
+def export_frames_to_json(frames, scenario_dir: str | Path, method: InterpMethod, save_json: bool = False):
 
     scenario_path = Path(scenario_dir).resolve()
 
@@ -444,7 +600,13 @@ def export_frames_to_json(frames, scenario_dir: str | Path, save_json: bool = Fa
         scenario_root = scenario_path
 
     scenario_name = scenario_root.name
-    out_path = scenario_root / f"{scenario_name}_prcd.json"
+    out_path = get_processed_json_path(scenario_dir, method)
+
+    # Safety: don't overwrite an existing processed file.
+    if save_json and out_path.exists():
+        print(f"[WARN] Processed JSON already exists, skipping write: {out_path.resolve()}")
+        return
+
 
     serializable_frames = []
 
@@ -476,13 +638,19 @@ def export_frames_to_json(frames, scenario_dir: str | Path, save_json: bool = Fa
 
         print(f"[INFO] Saved JSON to {out_path.resolve()}")
 
-def process_one_scenario(scenario_dir, save_img=False, save_json=False):
+def process_one_scenario(scenario_dir, method: InterpMethod, save_img=False, save_json=False):
+
+    if save_json:
+        out_path = get_processed_json_path(scenario_dir, method)
+        if out_path.exists():
+            print(f"[WARN] Output exists, skipping scenario: {out_path.resolve()}")
+            return
 
     # 1. Load parsed data
     data_raw = Read_parsed_data( scenario_dir )
 
     # 2. Resampling for time sync.
-    res = resampling( data_raw ) # resampling along timestamps ... return data by frames
+    res = resampling( data_raw, method=method ) # resampling along timestamps ... return data by frames
 
     # 3. Calculate distance travelled
     pos, total_dist = compute_total_dist( res )
@@ -491,7 +659,7 @@ def process_one_scenario(scenario_dir, save_img=False, save_json=False):
     create_image(pos, total_dist, res, scenario_dir, save_img=save_img)
 
     # 5. Save to local .json file
-    export_frames_to_json( res, scenario_dir, save_json=save_json)
+    export_frames_to_json( res, scenario_dir, method=method, save_json=save_json)
 
     # 6. Save total distance to distance.txt
     save_distance_txt(total_dist, scenario_dir)
@@ -507,6 +675,12 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Root directory. All subfolders of each scenario will be processed.",
+    )
+    parser.add_argument(
+        "--interp_method",
+        type=str,
+        required=True,
+        choices=["linear", "poly", "spline"],
     )
     args = parser.parse_args()
 
@@ -530,7 +704,7 @@ if __name__ == "__main__":
         
         found_any = True
         print(f"\n[INFO] Found scenario dir: {child}")
-        process_one_scenario(child, save_img=True, save_json=True)
+        process_one_scenario(child, method=args.interp_method, save_img=True, save_json=True)
 
     if not found_any:
         print("[WARN] No sub-directories with parsed data found.")

@@ -8,7 +8,7 @@ import re
 
 MAX_N_OBJECTS = 5
 
-def get_name_lists(root_dir: str) -> Tuple[List[str], List[str]]:
+def get_name_lists(root_dir: str, neg_case="all", train=True, neg=False) -> Tuple[List[str], List[str]]:
 
     root_path = Path(root_dir)
 
@@ -26,10 +26,11 @@ def get_name_lists(root_dir: str) -> Tuple[List[str], List[str]]:
         elif name.startswith("neg_"):
             neg_data_name_list.append(name)
 
-    print("\nExpert data scenario names")
-    print(exp_data_name_list)
-    print("\nNegative data scenario names")
-    print(neg_data_name_list)
+    if neg_case == "all" and train is True and neg is False:
+        print("\nExpert data scenario names")
+        print(exp_data_name_list)
+        print("\nNegative data scenario names")
+        print(neg_data_name_list)
 
     return exp_data_name_list, neg_data_name_list
 
@@ -213,7 +214,7 @@ def load_negative_dataset(path, frame, neg_data_name_list):
         if n_frames < frame:
             continue
 
-        # ✅ 슬라이딩 윈도우 = 샘플 단위
+        # sliding window (sample-wise)
         for seq in range(0, n_frames - frame + 1):
             data_vec = []
             target_vec = []
@@ -262,13 +263,19 @@ torch.manual_seed(0)
 class MixQuality():
     def __init__(self, root, train=True, neg=False, norm=True,
              exp_case=[1,2,3], neg_case=None, frame=1):
+        
+        self.neg_trial_sel = None
 
         self.neg_case_filter = neg_case if neg else None
 
         self.train = train
         self.neg   = neg
 
-        self.exp_list, self.neg_list = get_name_lists(root)
+        name_neg_case = "all" if neg_case is None else neg_case
+        self.exp_list, self.neg_list = get_name_lists(root,
+                                                      neg_case=name_neg_case,
+                                                      train=self.train,
+                                                      neg=self.neg)
         
         self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list)
         self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario, self.neg_trial, self.neg_seq = load_negative_dataset(root,frame,self.neg_list)
@@ -343,7 +350,7 @@ class MixQuality():
             perm = idx[torch.randperm(len(idx), generator=rng)]
 
             n_train = int(len(perm) * 0.8)
-            # 보호 로직: 최소 1개는 train에 남김
+
             if n_train <= 0:
                 n_train = max(1, len(perm) - 1)
 
@@ -377,32 +384,62 @@ class MixQuality():
                 self.e_label = test_idx.size(0)
 
             else:
-                # ---------- OOD test ----------
-                if self.neg_case_filter is not None and len(self.neg_case_filter) > 0:
-                    mask = torch.zeros(len(self.neg_scenario), dtype=torch.bool)
+                # ---------- OOD test (STRICT filtering; no silent fallback) ----------
+                filters = self.neg_case_filter
 
+                def _match(name: str, f: str) -> bool:
+                    # support: exact, prefix wildcard
+                    #  - "neg_straight"        (exact scenario)
+                    #  - "neg_straight_2"      (exact trial dir)
+                    #  - "neg_straight*"       (prefix)
+                    #  - "neg_straight_*"      (prefix)
+                    f = f.strip()
+                    if f.endswith("_*"):
+                        return name.startswith(f[:-2])
+                    if f.endswith("*"):
+                        return name.startswith(f[:-1])
+                    return name == f
+
+                if filters is not None and len(filters) > 0:
+                    if isinstance(filters, str):
+                        filters = [filters]
+
+                    mask = torch.zeros(len(self.neg_scenario), dtype=torch.bool)
                     for i, scen in enumerate(self.neg_scenario):
-                        if (scen in self.neg_case_filter) or (self.neg_trial[i] in self.neg_case_filter):
-                            mask[i] = True
+                        trial = self.neg_trial[i]
+                        ok = False
+                        for f in filters:
+                            if _match(scen, f) or _match(trial, f):
+                                ok = True
+                                break
+                        mask[i] = ok
+
+                    n_match = int(mask.sum().item())
+                    if n_match == 0:
+                        raise ValueError(
+                            f"[NEG FILTER ERROR] No negative samples matched neg_case={filters}. "
+                            f"This is strict on purpose to prevent mixing ALL negatives by mistake."
+                        )
 
                     self.x = self.n_in[mask]
                     self.y = self.n_target[mask]
                     self.case = self.n_case[mask]
 
-                    self.neg_trial_sel = [
-                        t for t, keep in zip(self.neg_trial, mask.tolist()) if keep
-                    ]
-                    self.neg_seq_sel = [
-                        s for s, keep in zip(self.neg_seq, mask.tolist()) if keep
-                    ]
+                    # debugging meta (what actually got selected)
+                    self.neg_scenario_sel = [s for s, keep in zip(self.neg_scenario, mask.tolist()) if keep]
+                    self.neg_trial_sel    = [t for t, keep in zip(self.neg_trial,   mask.tolist()) if keep]
+                    self.neg_seq_sel      = [s for s, keep in zip(self.neg_seq,     mask.tolist()) if keep]
+
                 else:
-                    # ---------- all negative ----------
+                    # if user did NOT request a filter, then load all negatives (this is intentional)
                     self.x = self.n_in
                     self.y = self.n_target
                     self.case = self.n_case
 
+                    self.neg_scenario_sel = self.neg_scenario
                     self.neg_trial_sel = self.neg_trial
                     self.neg_seq_sel = self.neg_seq
+
 
                 # ID label size는 유지 (기존 코드 의미)
                 self.e_label = test_idx.size(0)

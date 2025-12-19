@@ -22,8 +22,12 @@ class solver():
         self.lr_step = args.lr_step
         self.CLIP = 1
         self.SEED=SEED
+        self.neg_case = args.neg_case
+
         self.load_iter(args)
         self.load_model(args)
+
+
 
     def load_model(self,args):
 
@@ -45,7 +49,7 @@ class solver():
     def load_iter(self, args):
         root = args.root+'/Data/'
 
-        self.train_dataset = mixquality_dataset(root = root, train=True,norm=args.norm,frame=args.frame,exp_case=args.exp_case)
+        self.train_dataset = mixquality_dataset(root = root, train=True,norm=args.norm,frame=args.frame, exp_case=args.exp_case, neg_case=args.neg_case)
         self.train_iter = torch.utils.data.DataLoader(self.train_dataset, batch_size=args.batch_size, 
                                 shuffle=False)
         torch.manual_seed(self.SEED)
@@ -55,10 +59,12 @@ class solver():
                                 shuffle=False)
         torch.manual_seed(self.SEED)
 
-        self.test_n_dataset = mixquality_dataset(root = root, train = False, neg = True, norm = args.norm, frame = args.frame, neg_case = args.neg_case)
+        self.test_n_dataset = mixquality_dataset(root = root, train = False, neg = True, norm = args.norm, frame = args.frame, neg_case = self.neg_case)
 
         self.test_n_iter = torch.utils.data.DataLoader(self.test_n_dataset, batch_size=args.batch_size, 
                                 shuffle=False)
+        
+        print(f"[DATA] #samples | train={len(self.train_dataset)} | test_e(ID)={len(self.test_e_dataset)} | test_n(OOD)={len(self.test_n_dataset)}")
 
         self.data_dim = [self.train_dataset.x.size(-1), self.train_dataset.y.size(-1)]
         print("Done!")

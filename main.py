@@ -186,7 +186,7 @@ Solver.init_param()
 if args.mode == 'mdn':
     method = ['epis_', 'alea_', 'pi_entropy_']
 elif args.mode == 'vae':
-    method = ['recon_', 'kl_']
+    method = ['recon_']
 else:
     raise NotImplementedError
 

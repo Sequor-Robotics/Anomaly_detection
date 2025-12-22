@@ -148,9 +148,13 @@ def augment_folder(
     out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    prcd_files = sorted(scenario_dir.glob("*_prcd.json"))
+    prcd_files = sorted(
+        list(scenario_dir.glob("*_prcd.json")) +
+        list(scenario_dir.glob("*_prcd_linear.json"))
+    )
     if not prcd_files:
-        raise FileNotFoundError(f"No '*_prcd.json' found in: {scenario_dir}")
+        raise FileNotFoundError(f"No '*_prcd.json' or '*_prcd_linear.json' found in: {scenario_dir}")
+
 
     stats = Stats()
 
@@ -162,10 +166,13 @@ def augment_folder(
 
         # output name: keep *_prcd.json ending; insert suffix before it
         name = src.name
-        if name.endswith("_prcd.json"):
+        if name.endswith("_prcd_linear.json"):
+            out_name = name[: -len("_prcd_linear.json")] + f"{suffix}_prcd_linear.json"
+        elif name.endswith("_prcd.json"):
             out_name = name[: -len("_prcd.json")] + f"{suffix}_prcd.json"
         else:
             out_name = src.stem + suffix + ".json"
+
 
         dst = out_dir / out_name
         if dst.exists() and not overwrite:

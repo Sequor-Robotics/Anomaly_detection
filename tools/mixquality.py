@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Tuple
 import re
+from collections import defaultdict
 
 
 MAX_N_OBJECTS = 5
@@ -27,10 +28,14 @@ def get_name_lists(root_dir: str, neg_case="all", train=True, neg=False) -> Tupl
             neg_data_name_list.append(name)
 
     if neg_case == "all" and train is True and neg is False:
+        
         print("\nExpert data scenario names")
-        print(exp_data_name_list)
+        for exp_trial in sorted(exp_data_name_list):
+            print(exp_trial)
+        
         print("\nNegative data scenario names")
-        print(neg_data_name_list)
+        for neg_trial in sorted(neg_data_name_list):
+            print(neg_trial)
 
     return exp_data_name_list, neg_data_name_list
 
@@ -76,7 +81,7 @@ def build_state(frame_data: dict):
 
 
 
-def load_expert_dataset(path, frame, exp_data_name_list):
+def load_expert_dataset(path, frame, exp_data_name_list, simple_stride=1):
     """
     path : Dataset root dir
     frame: length of sequence
@@ -93,6 +98,10 @@ def load_expert_dataset(path, frame, exp_data_name_list):
     case = []
     file = []
     exp_scenario = []
+
+    trial_win_counts = {}
+    trial_frame_counts = {}
+    scen_win_counts = defaultdict(int)
 
     # 기존 R3 코드에서는 road/hazard 정보를 7차원으로 넣었으므로
     # 구조를 맞추기 위해 일단 7차원 dummy 0벡터 사용
@@ -123,8 +132,17 @@ def load_expert_dataset(path, frame, exp_data_name_list):
             print(f"[load_expert_dataset] Warning: {processed_path} has only {n_frames} frames (< frame={frame}), skip.")
             continue
 
+        is_simple_expert = data_path.startswith("expert_") and data_path.count("_") == 1
+        stride = int(simple_stride) if is_simple_expert else 1
+        stride = max(1, stride)
+
+        n_windows = ( n_frames - frame ) / stride + 1
+        trial_frame_counts[data_path] = n_frames
+        trial_win_counts[data_path] = n_windows
+        scen_win_counts[scenario] += n_windows
+
         # Sliding window
-        for seq in range(0, n_frames - frame + 1):
+        for seq in range(0, n_frames - frame + 1, stride):
             exp_scenario.append(scenario)
             data_vec = []
             target_vec = []
@@ -158,6 +176,25 @@ def load_expert_dataset(path, frame, exp_data_name_list):
             torch.empty(0, len(dummy_case)),
             np.asarray(file),
         )
+    
+    # expert data sample distribution
+    if len(scen_win_counts) > 0:
+        total_w = int(sum(scen_win_counts.values()))
+        print("\n[Expert sample distribution] (sliding windows)")
+        print(f"  frame={frame}  total_windows={total_w}  n_trials={len(trial_win_counts)}  n_scenarios={len(scen_win_counts)}")
+
+        # print("  - per trial dir")
+        # for trial in sorted(trial_win_counts.keys(), key=lambda k: trial_win_counts[k], reverse=True):
+        #     w = int(trial_win_counts[trial])
+        #     fr = int(trial_frame_counts.get(trial, -1))
+        #     pct = (100.0 * w / total_w) if total_w > 0 else 0.0
+        #     print(f"    {trial:<40s} frames={fr:6d}  windows={w:6d}  ({pct:5.1f}%)")
+
+        # print("  - per scenario prefix")
+        for scen in sorted(scen_win_counts.keys(), key=lambda k: scen_win_counts[k], reverse=True):
+            w = int(scen_win_counts[scen])
+            pct = (100.0 * w / total_w) if total_w > 0 else 0.0
+            print(f"    {scen:<40s} windows={w:6d}  ({pct:5.1f}%)")
 
     rt_tensor   = torch.FloatTensor(rt)
     act_tensor  = torch.FloatTensor(act)
@@ -277,7 +314,7 @@ class MixQuality():
                                                       train=self.train,
                                                       neg=self.neg)
         
-        self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list)
+        self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list, simple_stride=70)
         self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario, self.neg_trial, self.neg_seq = load_negative_dataset(root,frame,self.neg_list)
         
         """

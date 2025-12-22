@@ -428,7 +428,7 @@ def resampling(raw_data, method: InterpMethod):
     # Build interpolators once (important for spline)
     imu_lin_acc_fn = make_interpolator(time_stamp_imu, imu_lin_acc, method)
     imu_ang_vel_fn = make_interpolator(time_stamp_imu, imu_ang_vel, method)
-    odom_pos_fn = make_interpolator(time_stamp_odom, odom_pos, method)
+    odom_pos_fn    = make_interpolator(time_stamp_odom, odom_pos, method)
     odom_linvel_fn = make_interpolator(time_stamp_odom, odom_linvel, method)
 
 
@@ -655,16 +655,18 @@ def process_one_scenario(scenario_dir, method: InterpMethod, save_img=False, sav
     # 3. Calculate distance travelled
     pos, total_dist = compute_total_dist( res )
 
-    # 4. Visualize & save an image
-    create_image(pos, total_dist, res, scenario_dir, save_img=save_img)
+    if method == "linear":
+        
+        # 4. Visualize & save an image
+        create_image(pos, total_dist, res, scenario_dir, save_img=save_img)
 
-    # 5. Save to local .json file
+        # 5. Save total distance to distance.txt
+        save_distance_txt(total_dist, scenario_dir)
+
+    # 6. Save to local .json file
     export_frames_to_json( res, scenario_dir, method=method, save_json=save_json)
 
-    # 6. Save total distance to distance.txt
-    save_distance_txt(total_dist, scenario_dir)
-
-
+    
 
 ### Execution Part
 if __name__ == "__main__":

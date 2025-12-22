@@ -497,7 +497,7 @@ def main():
     ap.add_argument("--out_dir", type=str, default=None)
     ap.add_argument("--scenario_regex", type=str, default=None, help="only expert scenarios matching regex")
     ap.add_argument("--spike_topk", type=int, default=20)
-    ap.add_argument("--threshold", type=float, default=0.00002,
+    ap.add_argument("--threshold", type=float, default=0.000025,
                 help="manual threshold; highlight segments where score > threshold")
     ap.add_argument("--min_bad_len", type=int, default=1,
                     help="minimum consecutive samples to treat as a bad segment")

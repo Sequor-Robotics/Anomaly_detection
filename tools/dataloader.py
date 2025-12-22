@@ -17,8 +17,9 @@ class mixquality_dataset(data.Dataset):
         self.exp_dirs = getattr(mix, "exp_list", None)   # Ex: ['expert_xxx_1', 'expert_yyy_2', ...]
         self.neg_dirs = getattr(mix, "neg_list", None)   # Ex: ['neg_xxx_1', 'neg_xxx_2', ...]
 
-        self.neg_seq = getattr(mix, "neg_seq_sel", None)
-        self.neg_trial = getattr(mix, "neg_trial_sel", None)
+        self.neg_seq      = getattr(mix, "neg_seq_sel", None)
+        self.neg_trial    = getattr(mix, "neg_trial_sel", None)
+        self.neg_scenario = getattr(mix, "neg_scenario_sel", None)
 
         self.exp_train_scenarios = getattr(mix, "exp_train_scenarios", None)
         self.exp_test_scenarios  = getattr(mix, "exp_test_scenarios", None)

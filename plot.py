@@ -77,7 +77,7 @@ def plot_run(run_name, mode, exp_id):
             "AUROC / AUPR"
         ]
         for m in method:
-            lines.append(f"{m[:-1]}: {auroc_cur[m]:.3f} / {aupr_cur[m]:.3f}")
+            lines.append(f"{m[:-1]}: {auroc_cur[m]:.4f} / {aupr_cur[m]:.4f}")
         axes[0, 1].text(0.01, 0.99, "\n".join(lines),
                         va='top', ha='left')
         axes[0, 2].axis('off')

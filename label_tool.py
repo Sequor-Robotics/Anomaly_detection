@@ -20,7 +20,6 @@ sys.path.insert(0, str(THIS_DIR))
 from augment_lrflip import augment_folder
 
 
-
 MAX_DIST_DEFAULT = 5.0  # data_processor.py의 MAX_DIST와 맞추기
 
 
@@ -563,11 +562,11 @@ class LabelerWindow(QMainWindow):
         btn_cut = QPushButton("Apply keep-range (delete outside)")
         cut_row.addWidget(btn_cut)
 
-        # Row: drop first N frames
+        # Row: drop first/last N frames
         drop_row = QHBoxLayout()
         main.addLayout(drop_row)
 
-        drop_row.addWidget(QLabel("Drop first N frames"))
+        drop_row.addWidget(QLabel("Drop N frames (first or last)"))
         self.drop_n = QSpinBox()
         self.drop_n.setMinimum(0)
         self.drop_n.setMaximum(0)  # refresh_limits()에서 갱신
@@ -577,10 +576,14 @@ class LabelerWindow(QMainWindow):
         btn_drop = QPushButton("Apply drop-first")
         drop_row.addWidget(btn_drop)
 
+        btn_drop_last = QPushButton("Apply drop-last")
+        drop_row.addWidget(btn_drop_last)
+
         btn_drop_batch = QPushButton("Batch: drop-first N frames (selected scenarios)")
         drop_row.addWidget(btn_drop_batch)
 
-
+        btn_drop_last_batch = QPushButton("Batch: drop-last N frames (selected scenarios)")
+        drop_row.addWidget(btn_drop_last_batch)
 
         # Augment button
         aug_row = QHBoxLayout()
@@ -610,10 +613,11 @@ class LabelerWindow(QMainWindow):
         btn_prev.clicked.connect(lambda: self.goto(self.idx - 1))
         btn_next.clicked.connect(lambda: self.goto(self.idx + 1))
         self.spin.valueChanged.connect(self.goto)
+
         btn_drop.clicked.connect(self.drop_first_frames)
+        btn_drop_last.clicked.connect(self.drop_last_frames)
         btn_drop_batch.clicked.connect(self.batch_drop_first_frames)
-
-
+        btn_drop_last_batch.clicked.connect(self.batch_drop_last_frames)
 
         self.maxdist_spin.valueChanged.connect(self.on_maxdist_changed)
 
@@ -657,7 +661,6 @@ class LabelerWindow(QMainWindow):
             msg += "\n\nFailed folders (first 5):\n" + "\n".join(failed[:5])
 
         QMessageBox.information(self, "Augment result", msg)
-
 
     # -----------------------
     # Helpers
@@ -731,10 +734,9 @@ class LabelerWindow(QMainWindow):
         self.cut_a.setMaximum(m)
         self.cut_b.setMaximum(m)
 
-        # drop first N: 0..len(frames) 허용 (전부 drop도 가능)
+        # drop N: 0..len(frames) 허용 (전부 drop도 가능)
         if hasattr(self, "drop_n"):
             self.drop_n.setMaximum(len(self.frames))
-
 
     # -----------------------
     # Actions
@@ -805,6 +807,10 @@ class LabelerWindow(QMainWindow):
 
     def goto(self, new_idx):
         if self.frames is None:
+            return
+        if len(self.frames) == 0:
+            self.idx = 0
+            self.render()
             return
         new_idx = int(np.clip(int(new_idx), 0, len(self.frames) - 1))
         if new_idx == self.idx:
@@ -883,6 +889,51 @@ class LabelerWindow(QMainWindow):
 
         # 핵심: in-place로 앞부분 제거 (self.data와의 레퍼런스 유지)
         self.frames[:] = self.frames[n_drop:]
+
+        # 인덱스/스핀/컷 범위 초기화
+        self.idx = 0
+        self.refresh_limits()
+
+        self.spin.blockSignals(True)
+        self.spin.setValue(0)
+        self.spin.blockSignals(False)
+
+        self.cut_a.setValue(0)
+        self.cut_b.setValue(max(0, len(self.frames) - 1))
+        self.drop_n.setValue(0)
+
+        if self.json_path:
+            self.info.setText(f"Loaded: {self.json_path.name}\nFrames: {len(self.frames)}")
+
+        self.render()
+
+    def drop_last_frames(self):
+        if self.frames is None or len(self.frames) == 0:
+            return
+
+        n_drop = int(self.drop_n.value())
+        if n_drop <= 0:
+            QMessageBox.information(self, "Drop last", "n=0 입니다. 잘라낼 프레임 수를 올려주세요.")
+            return
+
+        total = len(self.frames)
+        n_drop = min(n_drop, total)
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm drop-last",
+            f"Drop last {n_drop} frames?\n"
+            f"Total: {total} -> {total - n_drop}",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        if n_drop == 0:
+            return
+
+        # 핵심: in-place로 뒷부분 제거 (self.data와의 레퍼런스 유지)
+        self.frames[:] = self.frames[:-n_drop] if n_drop < len(self.frames) else []
 
         # 인덱스/스핀/컷 범위 초기화
         self.idx = 0
@@ -1007,14 +1058,11 @@ class LabelerWindow(QMainWindow):
                 if frames is None:
                     raise ValueError("Cannot find frames")
 
-                # n_drop이 파일 길이 이상이면 '빈 프레임'이 되므로,
-                # 안전하게 스킵하거나(권장) 그냥 비우거나 선택해야 함.
-                # 여기서는 스킵(권장)으로 처리.
                 if len(frames) <= n_drop:
                     skipped += 1
                     continue
 
-                # 핵심: in-place로 앞부분 제거 (data["frames"] 레퍼런스 유지)
+                # 핵심: in-place로 앞부분 제거
                 frames[:] = frames[n_drop:]
 
                 # backup + overwrite
@@ -1039,6 +1087,77 @@ class LabelerWindow(QMainWindow):
 
         QMessageBox.information(self, "Batch drop-first result", msg)
 
+    def batch_drop_last_frames(self):
+        dirs = self.pick_directories("Select scenario folders to drop-last (multi-select)")
+        if not dirs:
+            return
+
+        n_drop = int(self.drop_n.value()) if hasattr(self, "drop_n") else 0
+        if n_drop <= 0:
+            QMessageBox.information(self, "Batch drop-last", "n=0 입니다. Drop N 값을 올려주세요.")
+            return
+
+        # 선택한 폴더들 아래의 *_prcd.json 모두 수집
+        json_files = []
+        for d in dirs:
+            if d.is_dir():
+                json_files.extend(sorted(d.rglob("*_prcd.json")))
+
+        if not json_files:
+            QMessageBox.information(self, "Batch drop-last", "No *_prcd.json files found under selected folders.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm batch drop-last",
+            f"Found {len(json_files)} files.\n"
+            f"Drop last {n_drop} frames from EACH file and overwrite?\n"
+            f"(A backup .bak will be created per file.)",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        ok, fail, skipped = 0, 0, 0
+        failed = []
+
+        for jp in json_files:
+            try:
+                with open(jp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                frames = self.get_frames_from_loaded_data(data)
+                if frames is None:
+                    raise ValueError("Cannot find frames")
+
+                if len(frames) <= n_drop:
+                    skipped += 1
+                    continue
+
+                # 핵심: in-place로 뒷부분 제거
+                frames[:] = frames[:-n_drop]
+
+                # backup + overwrite
+                backup = self.make_backup_path(jp)
+                try:
+                    backup.write_text(jp.read_text(encoding="utf-8"), encoding="utf-8")
+                except Exception:
+                    pass
+
+                with open(jp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                ok += 1
+
+            except Exception as e:
+                fail += 1
+                failed.append(f"{jp} :: {e}")
+
+        msg = f"Done.\nSuccess: {ok}\nSkipped (len<=N): {skipped}\nFailed: {fail}"
+        if fail > 0:
+            msg += "\n\nFailed files (first 5):\n" + "\n".join(failed[:5])
+
+        QMessageBox.information(self, "Batch drop-last result", msg)
 
     # -----------------------
     # Plot + click labeling

@@ -314,7 +314,7 @@ class MixQuality():
                                                       train=self.train,
                                                       neg=self.neg)
         
-        self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list, simple_stride=70)
+        self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list, simple_stride=200)
         self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario, self.neg_trial, self.neg_seq = load_negative_dataset(root,frame,self.neg_list)
         
         """

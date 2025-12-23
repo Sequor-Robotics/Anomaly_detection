@@ -3,14 +3,54 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 from tools.utils import print_n_txt
-from VAE.variants import WAE, RAE, VQVAE
 from MDN.loss import mdn_loss,mdn_eval,mdn_uncertainties
 from MDN.network import MixtureDensityNetwork
 from VAE.network import VAE
 from VAE.loss import VAE_loss,VAE_eval
 from tools.dataloader import mixquality_dataset
-
+from pathlib import Path
+from tqdm.auto import tqdm
+import threading
+import itertools
+import sys
 import time
+
+
+
+class _Spinner:
+    def __init__(self, text="Loading", interval=0.12):
+        self.text = text
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None:
+            return
+
+        def run():
+            for ch in itertools.cycle("|/-\\"):
+                if self._stop.is_set():
+                    break
+                sys.stdout.write(f"\r{self.text} {ch}")
+                sys.stdout.flush()
+                time.sleep(self.interval)
+
+            # clear line
+            sys.stdout.write("\r" + " " * (len(self.text) + 4) + "\r")
+            sys.stdout.flush()
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def stop(self, final_text=None):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if final_text:
+            print(final_text)
+
+
 class solver():
 
     def __init__(self, args, device, SEED):
@@ -28,83 +68,126 @@ class solver():
         self.load_model(args)
 
 
-
     def load_model(self,args):
 
         if args.mode== 'vae':
-            self.model = VAE(x_dim=self.data_dim[0],h_dim=args.h_dim,z_dim=args.z_dim).to(self.device)
+            self.model      = VAE( x_dim=self.data_dim[0], 
+                                   h_dim=args.h_dim, z_dim=args.z_dim ).to(self.device)
             self.train_func = self.train_VAE
-            self.eval_func = self.eval_ood_VAE
+            self.eval_func  = self.eval_ood_VAE
 
         elif args.mode == 'mdn':
-            self.model = MixtureDensityNetwork(
-                    name='mdn',x_dim=self.data_dim[0], y_dim=self.data_dim[1],k=args.k,h_dims=[128,128],actv=nn.ReLU(),sig_max=args.sig_max,
-                    mu_min=-3,mu_max=+3,dropout=args.dropout).to(self.device)
+            self.model      = MixtureDensityNetwork( name='mdn',x_dim=self.data_dim[0], y_dim=self.data_dim[1],k=args.k,h_dims=[128,128], actv=nn.ReLU(),
+                                                     sig_max=args.sig_max, mu_min=-3, mu_max=+3, dropout=args.dropout ).to(self.device)
             self.train_func = self.train_mdn
-            self.eval_func = self.eval_ood_mdn
+            self.eval_func  = self.eval_ood_mdn
+
 
     def init_param(self):
         self.model.init_param()
 
+
     def load_iter(self, args):
-        root = args.root+'/Data/'
+        root = str(Path(args.root).resolve() / "Data")
 
-        self.train_dataset = mixquality_dataset(root = root, train=True,norm=args.norm,frame=args.frame, exp_case=args.exp_case, neg_case=args.neg_case)
-        self.train_iter = torch.utils.data.DataLoader(self.train_dataset, batch_size=args.batch_size, 
-                                shuffle=False)
-        torch.manual_seed(self.SEED)
+        sp = _Spinner("Loading datasets / dataloaders")
+        sp.start()
 
-        self.test_e_dataset = mixquality_dataset(root = root, train=False,neg=False,norm=args.norm,frame=args.frame,exp_case=args.exp_case)
-        self.test_e_iter = torch.utils.data.DataLoader(self.test_e_dataset, batch_size=args.batch_size, 
-                                shuffle=False)
-        torch.manual_seed(self.SEED)
+        try:
+            # train data
+            self.train_dataset = mixquality_dataset(
+                root=root, train=True, norm=args.norm, frame=args.frame,
+                exp_case=args.exp_case, neg_case=args.neg_case
+            )
+            self.train_iter = torch.utils.data.DataLoader(
+                self.train_dataset, batch_size=args.batch, shuffle=False
+            )
+            torch.manual_seed(self.SEED)
 
-        self.test_n_dataset = mixquality_dataset(root = root, train = False, neg = True, norm = args.norm, frame = args.frame, neg_case = self.neg_case)
+            # test expert
+            self.test_e_dataset = mixquality_dataset(
+                root=root, train=False, neg=False, norm=args.norm, frame=args.frame,
+                exp_case=args.exp_case
+            )
+            self.test_e_iter = torch.utils.data.DataLoader(
+                self.test_e_dataset, batch_size=args.batch, shuffle=False
+            )
+            torch.manual_seed(self.SEED)
 
-        self.test_n_iter = torch.utils.data.DataLoader(self.test_n_dataset, batch_size=args.batch_size, 
-                                shuffle=False)
-        
+            # test negative
+            self.test_n_dataset = mixquality_dataset(
+                root=root, train=False, neg=True, norm=args.norm, frame=args.frame,
+                neg_case=self.neg_case
+            )
+            self.test_n_iter = torch.utils.data.DataLoader(
+                self.test_n_dataset, batch_size=args.batch, shuffle=False
+            )
+
+            self.data_dim = [self.train_dataset.x.size(-1), self.train_dataset.y.size(-1)]
+
+        except Exception as e:
+            sp.stop(final_text=f"[ERROR] Loading failed: {e}")
+            raise
+
+        sp.stop(final_text="\nDone!")
         print(f"[DATA] #samples | train={len(self.train_dataset)} | test_e(ID)={len(self.test_e_dataset)} | test_n(OOD)={len(self.test_n_dataset)}")
 
-        self.data_dim = [self.train_dataset.x.size(-1), self.train_dataset.y.size(-1)]
-        print("Done!")
 
+
+    ### VAE
     def train_VAE(self, f):
-        optimizer = optim.Adam(self.model.parameters(),lr=self.lr,weight_decay=self.wd,eps=1e-8)
+        optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.wd, eps=1e-8)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, gamma=self.lr_rate, step_size=self.lr_step)
-        train_l2 = []
-        test_l2 = []
-        for epoch in range(self.EPOCH):
+
+        train_l2, test_l2 = [], []
+
+        epoch_bar = tqdm(range(self.EPOCH), desc="Train(VAE)", unit="epoch", dynamic_ncols=True)
+
+        for epoch in epoch_bar:
             loss_sum = 0.0
-            for batch_in,batch_out in self.train_iter:
-                #batch_in = torch.cat((batch_in,batch_out),dim=1)
-                x_reconst, mu, logvar =  self.model.forward(batch_in.to(self.device))
+
+            batch_bar = tqdm(self.train_iter, desc=f"Epoch {epoch+1}/{self.EPOCH}", unit="batch",
+                            leave=False, dynamic_ncols=True)
+
+            for batch_in, batch_out in batch_bar:
+                x_reconst, mu, logvar = self.model.forward(batch_in.to(self.device))
                 loss_out = VAE_loss(batch_in.to(self.device), x_reconst, mu, logvar)
                 loss = torch.mean(loss_out['loss'])
-                optimizer.zero_grad() # reset gradient
-                loss.backward() # back-propagation
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.CLIP)
-                optimizer.step() # optimizer update
-                # Track losses
-                loss_sum += loss
-            scheduler.step()
-            loss_avg = loss_sum/len(self.train_iter)
-            train_out = self.test_eval_VAE(self.train_iter,'cuda')
-            test_in_out = self.test_eval_VAE(self.test_e_iter,'cuda')
-            test_ood_out = self.test_eval_VAE(self.test_n_iter,'cuda')
-            strTemp = ("\nepoch: [%d/%d] loss: [%.3f] train_loss:[%.4f] test_loss: [%.4f]"
-                        %(epoch,self.EPOCH,loss_avg,train_out['total'],test_in_out['total']))
-            print_n_txt(_f=f,_chars=strTemp)
-            strTemp =  ("[ID] recon avg: [%.3f] kl_div avg: [%.3f]"%
-                (test_in_out['recon'],test_in_out['kl_div']))
-            print_n_txt(_f=f,_chars=strTemp)
 
-            strTemp =  ("[OOD] recon avg: [%.3f] kl_div avg: [%.3f]"%
-                    (test_ood_out['recon'],test_ood_out['kl_div']))
-            print_n_txt(_f=f,_chars=strTemp)
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.CLIP)
+                optimizer.step()
+
+                loss_sum += float(loss.item())
+                batch_bar.set_postfix(loss=f"{loss.item():.4f}")
+
+            scheduler.step()
+            loss_avg = loss_sum / max(1, len(self.train_iter))
+
+            # epoch-end eval
+            train_out    = self.test_eval_VAE(self.train_iter, 'cuda')
+            test_in_out  = self.test_eval_VAE(self.test_e_iter, 'cuda')
+            test_ood_out = self.test_eval_VAE(self.test_n_iter, 'cuda')
+
+            # summary
+            epoch_bar.set_postfix(
+                loss=f"{loss_avg:.3f}",
+                train=f"{train_out['total']:.4f}",
+                test=f"{test_in_out['total']:.4f}"
+            )
+
+            # log
+            if (epoch % 10) == 0:
+                print_n_txt(f, f"\nepoch: [{epoch}/{self.EPOCH}] loss: [{loss_avg:.3f}] "
+                        f"train_loss:[{train_out['total']:.4f}] test_loss: [{test_in_out['total']:.4f}]")
+                print_n_txt(f, f"[ID]  recon avg: [{test_in_out['recon']:.3f}] kl_div avg: [{test_in_out['kl_div']:.3f}]")
+                print_n_txt(f, f"[OOD] recon avg: [{test_ood_out['recon']:.3f}] kl_div avg: [{test_ood_out['kl_div']:.3f}]")
+
             train_l2.append(train_out['total'])
             test_l2.append(test_in_out['total'])
-        return train_l2,test_l2
+
+        return train_l2, test_l2
 
     def eval_ood_VAE(self,data_iter,device):
         with torch.no_grad():
@@ -143,46 +226,62 @@ class solver():
             out_eval = {'recon':recon_avg,'kl_div':kl_avg, 'total':total_avg}
         return out_eval
 
-    def train_mdn(self,f):
-        optimizer = optim.Adam(self.model.parameters(),lr=self.lr,weight_decay=self.wd,eps=1e-8)
-        #scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30,60,90,120,150,180], gamma=args.lr_rate)
+
+    ### MDN
+    def train_mdn(self, f):
+        optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.wd, eps=1e-8)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, gamma=self.lr_rate, step_size=self.lr_step)
-        train_l2 = []
-        test_l2 = []
-        for epoch in range(self.EPOCH):
+
+        train_l2, test_l2 = [], []
+
+        epoch_bar = tqdm(range(self.EPOCH), desc="Train(MDN)", unit="epoch", dynamic_ncols=True)
+
+        for epoch in epoch_bar:
             loss_sum = 0.0
-            #time.sleep(1)
-            for batch_in,batch_out in self.train_iter:
-                out =  self.model.forward(batch_in.to(self.device))
-                pi,mu,sigma = out['pi'],out['mu'],out['sigma']
-                loss_out = mdn_loss(pi,mu,sigma,batch_out.to(self.device)) # 'mace_avg','epis_avg','alea_avg'
+
+            batch_bar = tqdm(self.train_iter, desc=f"Epoch {epoch+1}/{self.EPOCH}", unit="batch",
+                            leave=False, dynamic_ncols=True)
+
+            for batch_in, batch_out in batch_bar:
+                out = self.model.forward(batch_in.to(self.device))
+                pi, mu, sigma = out['pi'], out['mu'], out['sigma']
+
+                loss_out = mdn_loss(pi, mu, sigma, batch_out.to(self.device))
                 loss = torch.mean(loss_out['nll'])
-                optimizer.zero_grad() # reset gradient
-                loss.backward() # back-propagation
-                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.CLIP)
-                optimizer.step() # optimizer update
-                # Track losses
-                loss_sum += loss
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                loss_sum += float(loss.item())
+                batch_bar.set_postfix(loss=f"{loss.item():.4f}")
+
             scheduler.step()
-            loss_avg = loss_sum/len(self.train_iter)
-            train_out = self.test_eval_mdn(self.train_iter,'cuda')
-            test_in_out = self.test_eval_mdn(self.test_e_iter,'cuda')
-            test_ood_out = self.test_eval_mdn(self.test_n_iter,'cuda')
+            loss_avg = loss_sum / max(1, len(self.train_iter))
 
-            strTemp = ("\nepoch: [%d/%d] loss: [%.3f] train_l2:[%.4f] test_l2: [%.4f]"
-                        %(epoch,self.EPOCH,loss_avg,train_out['l2_norm'],test_in_out['l2_norm']))
-            print_n_txt(_f=f,_chars=strTemp)
+            train_out    = self.test_eval_mdn(self.train_iter, 'cuda')
+            test_in_out  = self.test_eval_mdn(self.test_e_iter, 'cuda')
+            test_ood_out = self.test_eval_mdn(self.test_n_iter, 'cuda')
 
-            strTemp =  ("[ID] epis avg: [%.3f] alea avg: [%.3f] pi_entropy avg: [%.3f]"%
-                (test_in_out['epis'],test_in_out['alea'],test_in_out['pi_entropy']))
-            print_n_txt(_f=f,_chars=strTemp)
+            epoch_bar.set_postfix(
+                loss=f"{loss_avg:.3f}",
+                train=f"{train_out['l2_norm']:.4f}",
+                test=f"{test_in_out['l2_norm']:.4f}"
+            )
 
-            strTemp =  ("[OOD] epis avg: [%.3f] alea avg: [%.3f] pi_entropy avg: [%.3f]"%
-                    (test_ood_out['epis'],test_ood_out['alea'],test_ood_out['pi_entropy']))
-            print_n_txt(_f=f,_chars=strTemp)
+            print_n_txt(f, f"\nepoch: [{epoch}/{self.EPOCH}] loss: [{loss_avg:.3f}] "
+                        f"train_l2:[{train_out['l2_norm']:.4f}] test_l2: [{test_in_out['l2_norm']:.4f}]")
+
+            print_n_txt(f, f"[ID]  epis avg: [{test_in_out['epis']:.3f}] "
+                        f"alea avg: [{test_in_out['alea']:.3f}] pi_entropy avg: [{test_in_out['pi_entropy']:.3f}]")
+
+            print_n_txt(f, f"[OOD] epis avg: [{test_ood_out['epis']:.3f}] "
+                        f"alea avg: [{test_ood_out['alea']:.3f}] pi_entropy avg: [{test_ood_out['pi_entropy']:.3f}]")
+
             train_l2.append(train_out['l2_norm'])
             test_l2.append(test_in_out['l2_norm'])
-        return train_l2,test_l2
+
+        return train_l2, test_l2
 
     def eval_ood_mdn(self,data_iter,device):
         with torch.no_grad():

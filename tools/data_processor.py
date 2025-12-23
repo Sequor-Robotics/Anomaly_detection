@@ -210,26 +210,7 @@ def Read_parsed_data(scenario_path: str | Path):
 
 ##### RESAMPLING
 
-def find_bracket_indices(t_array: np.ndarray, t_star: float):
-
-    idx_right = np.searchsorted(t_array, t_star, side="right")
-
-    idx1 = idx_right - 1
-    if idx1 < 0:
-        idx1 = None
-
-    idx2 = idx_right
-    if idx2 >= len(t_array):
-        idx2 = None
-
-    return idx1, idx2
-
-def linear_interpolation(t1, y1, t2, y2, t_star):
-    y_star = y1 + ( y2- y1 )/( t2 - t1 )*( t_star - t1 )
-    return y_star
-
 InterpMethod = Literal["linear", "poly", "spline"]
-
 
 def _dedupe_sorted_time_series(t: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Remove duplicate timestamps (keep first occurrence). Assumes `t` is sorted."""
@@ -239,7 +220,6 @@ def _dedupe_sorted_time_series(t: np.ndarray, y: np.ndarray) -> tuple[np.ndarray
     order = np.argsort(first_idx)
     sel = first_idx[order]
     return t[sel], y[sel]
-
 
 def polynomial_interpolation(
     t_array: np.ndarray,
@@ -294,7 +274,6 @@ def polynomial_interpolation(
         out[d] = np.polyval(coef, t_star)
     return out
 
-
 def spline_interpolation(t_array: np.ndarray, y_array: np.ndarray, t_star: float):
     """Cubic spline interpolation using SciPy if available."""
     if CubicSpline is None:
@@ -320,7 +299,6 @@ def spline_interpolation(t_array: np.ndarray, y_array: np.ndarray, t_star: float
 
     cs = CubicSpline(t_array, y_array, axis=0, extrapolate=True)
     return cs(t_star)
-
 
 def interpolate_time_series(
     t_array: np.ndarray,
@@ -405,7 +383,6 @@ def make_interpolator(
 
     # linear / poly
     return lambda ts: interpolate_time_series(t_array, y_array, ts, method=method)
-
 
 def resampling(raw_data, method: InterpMethod):
 
@@ -493,220 +470,106 @@ def resampling(raw_data, method: InterpMethod):
 
     return resampled_frames
 
+
 ##### Export
 
-def save_distance_txt(total_dist: float, scenario_dir: str | Path):
+def load_pos_from_json(json_path: Path) -> np.ndarray:
     """
-    save 'distance.txt'
+    from JSON : {"frames": [ {..., "position": [x,y], ...}, ... ]}
     """
-    scenario_path = Path(scenario_dir).resolve()
 
-    if scenario_path.name.endswith("_parsed"):
-        scenario_root = scenario_path.parent
-    else:
-        scenario_root = scenario_path
+    with json_path.open("r", encoding="utf-8") as f:
+        obj = json.load(f)
 
-    out_path = scenario_root / "distance.txt"
-
-    with out_path.open("w", encoding="utf-8") as f:
-        f.write(f"{total_dist:.6f}\n")
-
-    print(f"[INFO] Saved total distance to {out_path}")
-
-
-def compute_total_dist(frames):
+    frames = obj.get("frames", None)
+    if frames is None:
+        raise ValueError(f"'frames' key not found in: {json_path}")
 
     positions = []
-    timestamps = []
-
     for fr in frames:
         pos = fr.get("position", None)
-        if pos is None:
+        if pos is None: # exclude trash data
             continue
         pos = np.asarray(pos, dtype=float)
-
-        # Skip NaN
+        if pos.ndim != 1 or pos.size < 2:
+            continue
+        pos = pos[:2]
         if not np.all(np.isfinite(pos)):
             continue
-
         positions.append(pos)
-        timestamps.append(fr["timestamp"])
 
-    positions = np.asarray(positions)       # shape (N, 2) or (N, 3)
-    timestamps = np.asarray(timestamps)     # shape (N,)
+    if len(positions) == 0:
+        return np.zeros((0, 2), dtype=float)
 
+    return np.vstack(positions).astype(float)
+
+def compute_total_dist(positions: np.ndarray) -> float:
     if positions.shape[0] < 2:
         return 0.0
+    diffs = np.diff(positions, axis=0)
+    seg = np.linalg.norm(diffs, axis=1)
+    return float(seg.sum())
 
-    diffs = np.diff(positions, axis=0)               # shape (N-1, dim)
-    segment_lengths = np.linalg.norm(diffs, axis=1)  # shape (N-1,)
-    total_dist = float(segment_lengths.sum())
+def save_dist(total_dist: float, trial_dir: Path, scenario_id: str, trial_id: str) -> Path:
+    # {SCEN}_{TRIAL}_distance.txt
+    out_path = Path(trial_dir).resolve() / f"{scenario_id}_{trial_id}_distance.txt"
+    with out_path.open("w", encoding="utf-8") as f:
+        f.write(f"{total_dist:.6f}\n")
+    print(f"[INFO] Saved distance: {out_path}")
+    return out_path
 
-    return positions, total_dist
+def save_trj_svg(
+    trial_dir: Path,
+    positions: np.ndarray,
+    total_dist: float,
+    scenario_id: str,
+    trial_id: str,
+    padding_ratio: float = 0.05,
+) -> Path:
+    # {SCEN}_{TRIAL}_trajectory.svg
+    out_path = Path(trial_dir).resolve() / f"{scenario_id}_{trial_id}_trajectory.svg"
 
-def create_image( positions, d, frames, scenario_dir: str | Path, save_img: bool = False):
+    fig, ax = plt.subplots(figsize=(6, 6))
 
-    scenario_path = Path(scenario_dir).resolve()
-
-    if scenario_path.name.endswith("_parsed"):
-        scenario_root = scenario_path.parent
-    else:
-        scenario_root = scenario_path
-
-    scenario_name = scenario_root.name
-    out_path = scenario_root / f"{scenario_name}_trajectory.svg"
-
-    if save_img and positions.shape[0] >= 2:
+    if positions.shape[0] >= 2:
         xs = positions[:, 0]
         ys = positions[:, 1]
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.plot(xs, ys, "-", label="Trajectory")  # Total trajectory
+        ax.plot(xs, ys, "-", label="Trajectory")
+        ax.scatter(xs[0], ys[0], s=80, marker="o", label="Start")
+        ax.scatter(xs[-1], ys[-1], s=80, marker="X", label="End")
 
-        ax.scatter(xs[0], ys[0], s=80, color="green", marker="o", label="Start")  # Starting point (Green)
-        ax.scatter(xs[-1], ys[-1], s=80, color="red", marker="X", label="End")    # Ending point (Red)
+        x_min, x_max = float(xs.min()), float(xs.max())
+        y_min, y_max = float(ys.min()), float(ys.max())
 
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+        span = max(x_span, y_span)
+        if span == 0:
+            span = 1.0
+
+        pad = span * padding_ratio
+        span_padded = span + 2 * pad
+
+        x_center = (x_min + x_max) / 2.0
+        y_center = (y_min + y_max) / 2.0
+
+        ax.set_xlim(x_center - span_padded / 2.0, x_center + span_padded / 2.0)
+        ax.set_ylim(y_center - span_padded / 2.0, y_center + span_padded / 2.0)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.set_title(f"XY Trajectory, total distance={d:.4f}m")
-        ax.grid(True)
-        ax.legend()
-
-        plt.tight_layout()
-        plt.savefig( out_path )
-
-def get_processed_json_path(scenario_dir: str | Path, method: InterpMethod) -> Path:
-    """Compute output path like: {scenario_name}_prcd_{method}.json"""
-    scenario_path = Path(scenario_dir).resolve()
-
-    if scenario_path.name.endswith("_parsed"):
-        scenario_root = scenario_path.parent
     else:
-        scenario_root = scenario_path
+        ax.text(0.5, 0.5, "Not enough valid positions", ha="center", va="center")
+        ax.set_aspect("equal", adjustable="box")
 
-    scenario_name = scenario_root.name
-    method = str(method).lower().strip()
-    return scenario_root / f"{scenario_name}_prcd_{method}.json"
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_title(f"XY Trajectory, total distance={total_dist:.4f}m")
+    ax.grid(True)
+    ax.legend()
+    plt.tight_layout()
 
+    fig.savefig(out_path, format="svg")
+    plt.close(fig)
 
-def export_frames_to_json(frames, scenario_dir: str | Path, method: InterpMethod, save_json: bool = False):
-
-    scenario_path = Path(scenario_dir).resolve()
-
-    if scenario_path.name.endswith("_parsed"):
-        scenario_root = scenario_path.parent
-    else:
-        scenario_root = scenario_path
-
-    scenario_name = scenario_root.name
-    out_path = get_processed_json_path(scenario_dir, method)
-
-    # Safety: don't overwrite an existing processed file.
-    if save_json and out_path.exists():
-        print(f"[WARN] Processed JSON already exists, skipping write: {out_path.resolve()}")
-        return
-
-
-    serializable_frames = []
-
-    for fr in frames:
-        angles = np.asarray(fr["laser_angles"], dtype=float)
-        ranges = np.asarray(fr["laser_ranges"], dtype=float)
-
-        # (M, 2) .. angle–range matching
-        angle_range_pairs = np.stack([angles, ranges], axis=1)
-
-        frame_dict = {
-            "timestamp": float(fr["timestamp"]),
-            "lin_vel": fr["lin_vel"].tolist() if fr["lin_vel"] is not None else None,
-            "lin_acc": fr["lin_acc"].tolist() if fr["lin_acc"] is not None else None,
-            "ang_vel": float(fr["ang_vel"]) if fr["ang_vel"] is not None else None,
-            "scan": angle_range_pairs.tolist(),  # [[angle0, range0], [angle1, range1], ...] -> LaserScan data: (N, 2) array
-            "position": fr["position"].tolist() if fr["position"] is not None else None,
-        }
-
-        serializable_frames.append(frame_dict)
-
-    if save_json:
-        with out_path.open("w", encoding="utf-8") as f:
-            json.dump(
-                {"frames": serializable_frames},
-                f,
-                indent=2
-            )
-
-        print(f"[INFO] Saved JSON to {out_path.resolve()}")
-
-def process_one_scenario(scenario_dir, method: InterpMethod, save_img=False, save_json=False):
-
-    if save_json:
-        out_path = get_processed_json_path(scenario_dir, method)
-        if out_path.exists():
-            print(f"[WARN] Output exists, skipping scenario: {out_path.resolve()}")
-            return
-
-    # 1. Load parsed data
-    data_raw = Read_parsed_data( scenario_dir )
-
-    # 2. Resampling for time sync.
-    res = resampling( data_raw, method=method ) # resampling along timestamps ... return data by frames
-
-    # 3. Calculate distance travelled
-    pos, total_dist = compute_total_dist( res )
-
-    if method == "linear":
-        
-        # 4. Visualize & save an image
-        create_image(pos, total_dist, res, scenario_dir, save_img=save_img)
-
-        # 5. Save total distance to distance.txt
-        save_distance_txt(total_dist, scenario_dir)
-
-    # 6. Save to local .json file
-    export_frames_to_json( res, scenario_dir, method=method, save_json=save_json)
-
-    
-
-### Execution Part
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--src_dir",
-        type=str,
-        required=True,
-        help="Root directory. All subfolders of each scenario will be processed.",
-    )
-    parser.add_argument(
-        "--interp_method",
-        type=str,
-        required=True,
-        choices=["linear", "poly", "spline"],
-    )
-    args = parser.parse_args()
-
-    src_root = Path(args.src_dir).resolve()
-    print(f"[INFO] root src_dir: {src_root}")
-
-    # Inspect all sub-folders in root directory (src_root)
-    print(f"[INFO] Scanning sub-directories of {src_root} ...")
-    found_any = False
-    for child in sorted(src_root.iterdir()):
-        if not child.is_dir():
-            continue
-
-        parsed_dirs = [
-            p for p in child.iterdir()
-            if p.is_dir() and p.name.endswith("_parsed")
-        ]
-
-        if not parsed_dirs:
-            continue
-        
-        found_any = True
-        print(f"\n[INFO] Found scenario dir: {child}")
-        process_one_scenario(child, method=args.interp_method, save_img=True, save_json=True)
-
-    if not found_any:
-        print("[WARN] No sub-directories with parsed data found.")
+    print(f"[INFO] Saved trajectory: {out_path}")
+    return out_path

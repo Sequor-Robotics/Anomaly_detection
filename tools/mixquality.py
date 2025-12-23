@@ -7,42 +7,120 @@ import re
 from collections import defaultdict
 
 
-MAX_N_OBJECTS = 5
+def get_name_lists(root_dir: str, neg_case="all", train=True, neg=False,
+                   exp_case=None) -> Tuple[List[str], List[str]]:
+    """
+    Folder layout:
+      Data/
+        E1/001/...
+        ...
+        N6/123/...
 
-def get_name_lists(root_dir: str, neg_case="all", train=True, neg=False) -> Tuple[List[str], List[str]]:
+    Returns:
+      exp_data_name_list: ["E1/001", "E1/002", ...]
+      neg_data_name_list: ["N1/001", "N2/030", ...]
+    """
 
     root_path = Path(root_dir)
 
-    exp_data_name_list: List[str] = []
-    neg_data_name_list: List[str] = []
+    # exp_case=[1,2,3] -> {"E1","E2","E3"}
+    exp_scen_allow = None
+    if exp_case is not None:
+        try:
+            exp_scen_allow = {f"E{int(x)}" for x in exp_case}  # selected expert scenarios
+        except Exception:
+            exp_scen_allow = set()
 
-    for item in root_path.iterdir():
-        if not item.is_dir():
+    exp_trials: List[str] = []
+    neg_trials: List[str] = []
+
+    if not root_path.is_dir():
+        return exp_trials, neg_trials
+
+    scen_dirs = sorted([p for p in root_path.iterdir() if p.is_dir()])
+
+    for scen_dir in scen_dirs:
+        scen_id = scen_dir.name
+        if not re.match(r'^[EN]\d+$', scen_id):
             continue
 
-        name = item.name
+        if scen_id.startswith("E") and exp_scen_allow is not None and scen_id not in exp_scen_allow:
+            continue
 
-        if name.startswith("expert_"):
-            exp_data_name_list.append(name)
-        elif name.startswith("neg_"):
-            neg_data_name_list.append(name)
+        trial_dirs = sorted([p for p in scen_dir.iterdir() if p.is_dir() and p.name.isdigit()])
+
+        for td in trial_dirs:
+            trial_ref = f"{scen_id}/{td.name}"  # ex) "E1/030"
+            if scen_id.startswith("E"):
+                exp_trials.append(trial_ref)
+            else:
+                neg_trials.append(trial_ref)
 
     if neg_case == "all" and train is True and neg is False:
-        
-        print("\nExpert data scenario names")
-        for exp_trial in sorted(exp_data_name_list):
-            print(exp_trial)
-        
-        print("\nNegative data scenario names")
-        for neg_trial in sorted(neg_data_name_list):
-            print(neg_trial)
+        print("\nExpert trial refs")
+        for line in _summarize_trial_refs(exp_trials):
+            print("  " + line)
 
-    return exp_data_name_list, neg_data_name_list
+        print("\nNegative trial refs")
+        for line in _summarize_trial_refs(neg_trials):
+            print("  " + line)
+
+        print(f"\n[INFO] #expert_trials={len(exp_trials)}  #neg_trials={len(neg_trials)}")
+
+
+    return exp_trials, neg_trials
+
+def _summarize_trial_refs(trial_refs: List[str]) -> List[str]:
+    """
+    Compress refs
+      ["N1/001", "N1/002", ..., "N1/031", "N1/033"]
+    into
+      ["N1/001 ~ N1/031, N1/033"]
+    """
+    # scenario -> sorted unique trial ints
+    scen_map = {}
+    for ref in trial_refs:
+        parts = re.split(r"[\\/]", str(ref))
+        if len(parts) != 2:
+            continue
+        scen, trial = parts[0], parts[1]
+        if not trial.isdigit():
+            continue
+        scen_map.setdefault(scen, set()).add(int(trial))
+
+    lines = []
+    for scen in sorted(scen_map.keys()):
+        nums = sorted(scen_map[scen])
+        if not nums:
+            continue
+
+        # compress consecutive ranges
+        ranges = []
+        start = prev = nums[0]
+        for n in nums[1:]:
+            if n == prev + 1:
+                prev = n
+                continue
+            ranges.append((start, prev))
+            start = prev = n
+        ranges.append((start, prev))
+
+        # format
+        chunks = []
+        for a, b in ranges:
+            if a == b:
+                chunks.append(f"{scen}/{a:03d}")
+            else:
+                chunks.append(f"{scen}/{a:03d} ~ {scen}/{b:03d}")
+
+        lines.append(", ".join(chunks))
+
+    return lines
 
 
 def build_state(frame_data: dict):
     """
-    Build 1D state vector at a frame from processed.json
+    Build 1D state vector at a frame from .json data
     """
     
     pos     = frame_data.get("position") or [0.0, 0.0]
@@ -79,179 +157,174 @@ def build_state(frame_data: dict):
 
     return state_vec
 
+def _resolve_trial_json(trial_dir: Path, scenario_id: str, trial_id: str) -> Path | None:
+    """
+    {scenario_id}_{trial_id}.json  (ex: E1_030.json)
+    Fallback: any *.json inside trial_dir
+    """
+    cand = trial_dir / f"{scenario_id}_{trial_id}.json"
+    if cand.exists():
+        return cand
 
+    js = sorted([p for p in trial_dir.glob("*.json") if p.is_file()])
+    if not js:
+        return None
 
-def load_expert_dataset(path, frame, exp_data_name_list, simple_stride=1):
+    # if multiple, prefer ones that start with scenario_id_
+    for p in js:
+        if p.name.startswith(f"{scenario_id}_"):
+            return p
+    return js[0]
+
+def load_expert_dataset(path, frame, exp_data_name_list, train, simple_stride=1):
     """
     path : Dataset root dir
     frame: length of sequence
+    exp_data_name_list: ["E1/001", "E1/002", ...]
 
     Return:
       rt   : (N, D_in)  FloatTensor (Input)
       act  : (N, D_out) FloatTensor (Target)
-      case : (N, 7)     FloatTensor (dummy)
       file : (N,)       np.ndarray  (sample source info)
     """
 
-    rt   = []
-    act  = []
-    case = []
-    file = []
-    exp_scenario = []
+    rt, act, file = [], [], []
+    exp_scenario  = []
 
-    trial_win_counts = {}
+    trial_win_counts   = {}
     trial_frame_counts = {}
-    scen_win_counts = defaultdict(int)
+    scen_win_counts    = defaultdict(int)
 
-    # 기존 R3 코드에서는 road/hazard 정보를 7차원으로 넣었으므로
-    # 구조를 맞추기 위해 일단 7차원 dummy 0벡터 사용
-    dummy_case = [0.0] * 7
-
-    for data_path in exp_data_name_list:
-        scenario = re.sub(r'_\d+$', '', data_path)
-        scenario_root = Path(path) / data_path
-        if not scenario_root.exists():
-            print(f"[load_expert_dataset] Warning: {scenario_root} not found, skip.")
+    for trial_ref in exp_data_name_list:
+        # trial_ref = "E1/030"
+        parts = re.split(r"[\\/]", str(trial_ref))
+        if len(parts) != 2:
+            print(f"[load_expert_dataset] Warning: invalid trial_ref={trial_ref}, skip.")
             continue
 
-        scenario_name = scenario_root.name
-        processed_path = scenario_root / f"{scenario_name}_prcd.json"
+        scenario_id, trial_id = parts[0], parts[1]
 
-        if not processed_path.exists():
-            print(f"[load_expert_dataset] Warning: {processed_path} not found, skip.")
+        trial_dir = Path(path) / scenario_id / trial_id
+        if not trial_dir.exists():
+            print(f"[load_expert_dataset] Warning: {trial_dir} not found, skip.")
             continue
 
-        # Read '*_processed.json'
-        with open(processed_path, "r") as f:
+        json_path = _resolve_trial_json(trial_dir, scenario_id, trial_id)
+        if json_path is None or not json_path.exists():
+            print(f"[load_expert_dataset] Warning: json not found under {trial_dir}, skip.")
+            continue
+
+        # Read .json data file
+        with open(json_path, "r") as f:
             data = json.load(f)
 
-        frames = data.get("frames", [])
+        frames   = data.get("frames", [])
         n_frames = len(frames)
 
         if n_frames < frame:
-            print(f"[load_expert_dataset] Warning: {processed_path} has only {n_frames} frames (< frame={frame}), skip.")
+            print(f"[load_expert_dataset] Warning: {json_path} has only {n_frames} frames (< frame={frame}), skip.")
             continue
 
-        is_simple_expert = data_path.startswith("expert_") and data_path.count("_") == 1
-        stride = int(simple_stride) if is_simple_expert else 1
-        stride = max(1, stride)
+        # [NOTE] Apply stride ONLY for E1 case (too dense sampling on E1 exacerbates performance of model)
+        if scenario_id == "E1":
+            stride = max(1, int(simple_stride))
+        else:
+            stride = 1
 
-        n_windows = ( n_frames - frame ) / stride + 1
-        trial_frame_counts[data_path] = n_frames
-        trial_win_counts[data_path] = n_windows
-        scen_win_counts[scenario] += n_windows
+        n_windows                     = (n_frames - frame) // stride + 1
+        trial_frame_counts[trial_ref] = n_frames
+        trial_win_counts[trial_ref]   = n_windows
+        scen_win_counts[scenario_id] += n_windows
 
-        # Sliding window
         for seq in range(0, n_frames - frame + 1, stride):
-            exp_scenario.append(scenario)
-            data_vec = []
+
+            exp_scenario.append(scenario_id)   # E1/E2/E3
+            data_vec   = []
             target_vec = []
 
             for it in range(frame):
                 fr = frames[seq + it]
                 s = build_state(fr)
-
-                # State (input)
                 data_vec.extend(s)
 
-                # Action (output)
                 if it == frame - 1:
-                    target_vec.append(float(s[2]))  # lin_acc x
-                    target_vec.append(float(s[3]))  # lin_acc y
-                    target_vec.append(float(s[4]))  # ang_vel
+                    target_vec.append(float(s[2]))  # ax
+                    target_vec.append(float(s[3]))  # ay
+                    target_vec.append(float(s[4]))  # w
 
             rt.append(data_vec)
             act.append(target_vec)
-            case.append(dummy_case)
+            file.append(f"{scenario_id}/{trial_id}:{seq}")
 
-            # # sample source
-            # file.append(str(processed_path) + f":{seq}")
 
-    # No data case ... dummy
     if len(rt) == 0:
         print("[load_expert_dataset] Warning: no expert data loaded.")
         return (
             torch.empty(0, 0),
             torch.empty(0, 0),
-            torch.empty(0, len(dummy_case)),
             np.asarray(file),
+            [],
         )
-    
-    # expert data sample distribution
+
     if len(scen_win_counts) > 0:
         total_w = int(sum(scen_win_counts.values()))
-        print("\n[Expert sample distribution] (sliding windows)")
-        print(f"  frame={frame}  total_windows={total_w}  n_trials={len(trial_win_counts)}  n_scenarios={len(scen_win_counts)}")
+        if train:
+            print("\n[Expert sample distribution] (sliding windows)")
+            print(f"  frame={frame}  total_windows={total_w}  num_trials={len(trial_win_counts)}  num_scenarios={len(scen_win_counts)}")
+            for scen in sorted(scen_win_counts.keys(), key=lambda k: scen_win_counts[k], reverse=True):
+                w = int(scen_win_counts[scen])
+                pct = (100.0 * w / total_w) if total_w > 0 else 0.0
+                print(f"    {scen:<8s} windows={w:6d}  ({pct:5.1f}%)")
 
-        # print("  - per trial dir")
-        # for trial in sorted(trial_win_counts.keys(), key=lambda k: trial_win_counts[k], reverse=True):
-        #     w = int(trial_win_counts[trial])
-        #     fr = int(trial_frame_counts.get(trial, -1))
-        #     pct = (100.0 * w / total_w) if total_w > 0 else 0.0
-        #     print(f"    {trial:<40s} frames={fr:6d}  windows={w:6d}  ({pct:5.1f}%)")
-
-        # print("  - per scenario prefix")
-        for scen in sorted(scen_win_counts.keys(), key=lambda k: scen_win_counts[k], reverse=True):
-            w = int(scen_win_counts[scen])
-            pct = (100.0 * w / total_w) if total_w > 0 else 0.0
-            print(f"    {scen:<40s} windows={w:6d}  ({pct:5.1f}%)")
-
-    rt_tensor   = torch.FloatTensor(rt)
-    act_tensor  = torch.FloatTensor(act)
-    case_tensor = torch.FloatTensor(case)
-    file_arr    = np.asarray(file)
-
-    return rt_tensor, act_tensor, case_tensor, file_arr, exp_scenario
-
-
+    return (
+        torch.FloatTensor(rt),
+        torch.FloatTensor(act),
+        np.asarray(file),
+        exp_scenario,
+    )
 
 def load_negative_dataset(path, frame, neg_data_name_list):
     """
     path : Dataset root dir
     frame: length of sequence
+    neg_data_name_list: ["N1/001", "N2/030", ...]
 
     Return:
       rt   : (N, D_in)  FloatTensor (Input)
       act  : (N, D_out) FloatTensor (Target)
-      case : (N, 7)     FloatTensor (dummy)
       file : (N,)       np.ndarray  (sample source info)
       neg_scenario : (N,) list[str]  (scenario name per sample)
     """
 
-    rt = []
-    act = []
-    case = []
-    file = []
+    rt, act, file = [], [], []
     neg_scenario = []
+    neg_trial = []
 
-    neg_trial = []   # 
-    neg_seq   = []   # 
-
-
-    dummy_case = [0.0] * 7
-
-    for data_path in neg_data_name_list:
-
-        scenario_prefix = re.sub(r'_\d+$', '', data_path)
-
-        scenario_root = Path(path) / data_path
-        if not scenario_root.exists():
+    for trial_ref in neg_data_name_list:
+        # trial_ref = "N1/010"
+        parts = re.split(r"[\\/]", str(trial_ref))
+        if len(parts) != 2:
             continue
 
-        processed_path = scenario_root / f"{scenario_root.name}_prcd.json"
-        if not processed_path.exists():
+        scenario_id, trial_id = parts[0], parts[1]
+
+        trial_dir = Path(path) / scenario_id / trial_id
+        if not trial_dir.exists():
             continue
 
-        with open(processed_path, "r") as f:
+        json_path = _resolve_trial_json(trial_dir, scenario_id, trial_id)
+        if json_path is None or not json_path.exists():
+            continue
+
+        # Read .json data file
+        with open(json_path, "r") as f:
             data = json.load(f)
 
         frames = data.get("frames", [])
         n_frames = len(frames)
-
         if n_frames < frame:
             continue
 
-        # sliding window (sample-wise)
         for seq in range(0, n_frames - frame + 1):
             data_vec = []
             target_vec = []
@@ -262,35 +335,35 @@ def load_negative_dataset(path, frame, neg_data_name_list):
                 data_vec.extend(s)
 
                 if it == frame - 1:
-                    target_vec.append(float(s[2]))  # lin_acc x
-                    target_vec.append(float(s[3]))  # lin_acc y
-                    target_vec.append(float(s[4]))  # ang_vel
+                    target_vec.append(float(s[2]))
+                    target_vec.append(float(s[3]))
+                    target_vec.append(float(s[4]))
 
             rt.append(data_vec)
             act.append(target_vec)
-            case.append(dummy_case)
+            file.append(f"{scenario_id}/{trial_id}:{seq}")
 
-            neg_scenario.append(scenario_prefix)
-            neg_trial.append(data_path)  # (neg_xxx_3)
-            neg_seq.append(seq)          # window start frame
-
+            neg_scenario.append(scenario_id)               # "N1"
+            neg_trial.append(f"{scenario_id}/{trial_id}")  # "N1/030"
 
     if len(rt) == 0:
         print("[load_negative_dataset] Warning: no negative data loaded.")
         return (
             torch.empty(0, 0),
             torch.empty(0, 0),
-            torch.empty(0, len(dummy_case)),
             np.asarray(file),
+            [],
+            [],
             [],
         )
 
-    rt_tensor   = torch.FloatTensor(rt)
-    act_tensor  = torch.FloatTensor(act)
-    case_tensor = torch.FloatTensor(case)
-    file_arr    = np.asarray(file)
-
-    return rt_tensor, act_tensor, case_tensor, file_arr, neg_scenario, neg_trial, neg_seq
+    return (
+        torch.FloatTensor(rt),
+        torch.FloatTensor(act),
+        np.asarray(file),
+        neg_scenario,
+        neg_trial,
+    )
 
 
 
@@ -299,7 +372,7 @@ torch.manual_seed(0)
 
 class MixQuality():
     def __init__(self, root, train=True, neg=False, norm=True,
-             exp_case=[1,2,3], neg_case=None, frame=1):
+             exp_case=None, neg_case=None, frame=10):
         
         self.neg_trial_sel = None
 
@@ -312,10 +385,11 @@ class MixQuality():
         self.exp_list, self.neg_list = get_name_lists(root,
                                                       neg_case=name_neg_case,
                                                       train=self.train,
-                                                      neg=self.neg)
-        
-        self.e_in, self.e_target, self.e_case, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list, simple_stride=200)
-        self.n_in, self.n_target, self.n_case, self.file_negative, self.neg_scenario, self.neg_trial, self.neg_seq = load_negative_dataset(root,frame,self.neg_list)
+                                                      neg=self.neg,
+                                                      exp_case=exp_case )
+
+        self.e_in, self.e_target, self.file_expert, self.exp_scenario   = load_expert_dataset(root,frame,self.exp_list, train, simple_stride=150)
+        self.n_in, self.n_target, self.file_negative, self.neg_scenario, self.neg_trial = load_negative_dataset(root,frame,self.neg_list)
         
         """
         e_in     : Expert input data samples
@@ -326,12 +400,10 @@ class MixQuality():
         
         self.e_size = self.e_in.size(0)
         self.n_size = self.n_in.size(0)
-
         
         # True = Z-score standardization
         # False = min-max
         self.norm = norm
-
         self.frame = frame
 
         in_list = []
@@ -368,9 +440,9 @@ class MixQuality():
 
 
     def load(self):
-        # =====================================================
+
         # Expert scenario-wise 8:2 split
-        # =====================================================
+
         rng = torch.Generator()
         rng.manual_seed(0)
 
@@ -384,7 +456,7 @@ class MixQuality():
 
         for scen, idx_list in scen_to_idx.items():
             idx = torch.tensor(idx_list, dtype=torch.long)
-            perm = idx[torch.randperm(len(idx), generator=rng)]
+            perm = idx[torch.randperm(len(idx), generator=rng)]  # random select
 
             n_train = int(len(perm) * 0.8)
 
@@ -395,41 +467,36 @@ class MixQuality():
             test_idx.append(perm[n_train:])
 
         train_idx = torch.cat(train_idx)
-        test_idx = torch.cat(test_idx)
+        test_idx  = torch.cat(test_idx)
 
-        # =====================================================
-        # TRAIN / TEST branching
-        # =====================================================
+
+        # TRAIN (80% expert)
         if self.train:
-            # ======================
-            # TRAIN : expert only
-            # ======================
             self.x = self.e_in[train_idx]
             self.y = self.e_target[train_idx]
-            self.case = self.e_case[train_idx]
             self.e_label = train_idx.size(0)
 
+        # TEST (20% expert + negative)
         else:
-            # ======================
-            # TEST
-            # ======================
+            # TEST (ID)
             if not self.neg:
-                # ---------- ID test ----------
+
                 self.x = self.e_in[test_idx]
                 self.y = self.e_target[test_idx]
-                self.case = self.e_case[test_idx]
                 self.e_label = test_idx.size(0)
 
+            # TEST (OOD)
             else:
-                # ---------- OOD test (STRICT filtering; no silent fallback) ----------
                 filters = self.neg_case_filter
 
                 def _match(name: str, f: str) -> bool:
-                    # support: exact, prefix wildcard
-                    #  - "neg_straight"        (exact scenario)
-                    #  - "neg_straight_2"      (exact trial dir)
-                    #  - "neg_straight*"       (prefix)
-                    #  - "neg_straight_*"      (prefix)
+
+                    # support:
+                    #  - "N1"        (scenario)
+                    #  - "N1/030"    (specific trial)
+                    #  - "N1*" or "N1_*" (prefix)
+                    #  - "N1_030"    (alias)
+
                     f = f.strip()
                     if f.endswith("_*"):
                         return name.startswith(f[:-2])
@@ -441,12 +508,13 @@ class MixQuality():
                     if isinstance(filters, str):
                         filters = [filters]
 
-                    mask = torch.zeros(len(self.neg_scenario), dtype=torch.bool)
+                    mask = torch.zeros(len(self.neg_scenario), dtype=torch.bool)  # Mask out undesired negative scenario (if filters=None, use all of negative data)
                     for i, scen in enumerate(self.neg_scenario):
                         trial = self.neg_trial[i]
+                        trial_alias = trial.replace("/", "_")  # "N1/030" -> "N1_030"
                         ok = False
                         for f in filters:
-                            if _match(scen, f) or _match(trial, f):
+                            if _match(scen, f) or _match(trial, f) or _match(trial_alias, f):
                                 ok = True
                                 break
                         mask[i] = ok
@@ -460,56 +528,35 @@ class MixQuality():
 
                     self.x = self.n_in[mask]
                     self.y = self.n_target[mask]
-                    self.case = self.n_case[mask]
 
-                    # debugging meta (what actually got selected)
+                    # save elements where mask=True
                     self.neg_scenario_sel = [s for s, keep in zip(self.neg_scenario, mask.tolist()) if keep]
-                    self.neg_trial_sel    = [t for t, keep in zip(self.neg_trial,   mask.tolist()) if keep]
-                    self.neg_seq_sel      = [s for s, keep in zip(self.neg_seq,     mask.tolist()) if keep]
+                    self.neg_trial_sel    = [t for t, keep in zip(self.neg_trial,    mask.tolist()) if keep]
 
                 else:
-                    # if user did NOT request a filter, then load all negatives (this is intentional)
+                    # load all negatives
                     self.x = self.n_in
                     self.y = self.n_target
-                    self.case = self.n_case
 
                     self.neg_scenario_sel = self.neg_scenario
                     self.neg_trial_sel = self.neg_trial
-                    self.neg_seq_sel = self.neg_seq
 
-
-                # ID label size는 유지 (기존 코드 의미)
                 self.e_label = test_idx.size(0)
 
             self.exp_train_scenarios = sorted(set(self.exp_scenario[i] for i in train_idx.tolist()))
             self.exp_test_scenarios  = sorted(set(self.exp_scenario[i] for i in test_idx.tolist()))
 
 
-
-    # def normaize(self):
-    #     # except LiDAR data
-    #     if self.norm:
-    #         self.x = (self.x - self.mean_in)/(self.std_in)
-    #         self.y = (self.y - self.mean_t)/(self.std_t)
-    #         self.x[self.x != self.x] = 0
-    #         self.y[self.y != self.y] = 0
-    #     else:
-    #         self.max_in = torch.max(torch.cat((self.e_in,self.n_in),dim=0),dim=0)[0]
-    #         self.min_in = torch.min(torch.cat((self.e_in,self.n_in),dim=0),dim=0)[0]
-    #         self.max_t = torch.max(torch.cat((self.e_target,self.n_target),dim=0),dim=0)[0]
-    #         self.min_t = torch.min(torch.cat((self.e_target,self.n_target),dim=0),dim=0)[0]
-    #         self.x = (self.x - self.min_in)/(self.max_in-self.min_in)
-    #         self.y = (self.y - self.min_t)/(self.max_t-self.min_t)
-
     def normalize(self):
         """
         Input x shape: (N, D_in) where D_in = frame * (7 + lidar_dim)
         - per frame:
-            0~4 : z-normalization (or min-max when self.norm==0)
-            5~6 : divide by 5
-            7~  : LiDAR (keep as-is)
-        Target y: (N, 3) -> normalize as usual (z or min-max)
+            0~4 : z-normalization or min-max (depending on self.norm)
+            5~6 : 1 - ( VALUE / 5 )
+            7~  : LiDAR (ALREADY PROCESSED)
+        Target y: (N, 3) -> normalize (z or min-max)
         """
+
         D = self.x.size(1)
         F = self.frame
 
@@ -523,12 +570,12 @@ class MixQuality():
         if lidar_dim < 0:
             raise ValueError(f"[normalize] per_frame_dim={per_frame_dim} < non_lidar_dim={non_lidar_dim}")
 
-        # ---- build indices across frames ----
-        idx_z = []    # per-frame 0~4
-        idx_div = []  # per-frame 5~6
+        # Build indices
+        idx_z   = []    # per-frame 0~4
+        idx_div = []    # per-frame 5~6
         for i in range(F):
             base = i * per_frame_dim
-            idx_z.extend(range(base + 0, base + 5))  # 0,1,2,3,4
+            idx_z.extend(range(base + 0, base + 5))    # 0,1,2,3,4
             idx_div.extend(range(base + 5, base + 7))  # 5,6
 
         idx_z = torch.tensor(idx_z, dtype=torch.long, device=self.x.device)
@@ -537,13 +584,13 @@ class MixQuality():
         eps = 1e-8
 
         if self.norm:
-            # 0~4: z-score
+            # 0~4
             self.x[:, idx_z] = (self.x[:, idx_z] - self.mean_in[idx_z]) / (self.std_in[idx_z] + eps)
 
-            # 5~6: divide by 5 (NO z-score)
+            # 5~6
             self.x[:, idx_div] = 1 - ( self.x[:, idx_div] / 5.0 )
 
-            # target y: z-score (as usual)
+            # target y: as usual
             self.y = (self.y - self.mean_t) / (self.std_t + eps)
 
             # NaN guard
@@ -551,7 +598,7 @@ class MixQuality():
             self.y[self.y != self.y] = 0
 
         else:
-            # min-max for 0~4 only, divide-by-5 for 5~6, LiDAR unchanged
+            # min-max for 0~4 only
             in_list = []
             t_list = []
             if self.e_in.numel() > 0:
@@ -569,14 +616,14 @@ class MixQuality():
             max_t = all_t.max(dim=0)[0]
             min_t = all_t.min(dim=0)[0]
 
-            # 0~4: min-max
+            # 0~4
             denom_in_z = (max_in[idx_z] - min_in[idx_z]) + eps
             self.x[:, idx_z] = (self.x[:, idx_z] - min_in[idx_z]) / denom_in_z
 
-            # 5~6: divide by 5 (NO min-max)
+            # 5~6
             self.x[:, idx_div] = 1 - ( self.x[:, idx_div] / 5.0 )
 
-            # target y: min-max (as usual)
+            # target y: as usual
             denom_t = (max_t - min_t) + eps
             self.y = (self.y - min_t) / denom_t
 
@@ -586,8 +633,9 @@ class MixQuality():
 
 
 
+
 if __name__ == '__main__':
     m = MixQuality(root='../Data/',train=True,neg=False)
 
-    for i in range(200):
-        print(m.x[i][5:7])
+    # for i in range(200):
+    #     print(m.x[i][5:7])

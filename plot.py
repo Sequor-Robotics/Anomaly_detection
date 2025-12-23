@@ -7,6 +7,7 @@ import matplotlib.ticker as mticker
 from tools.measure_ood import measure
 import re
 from sklearn.metrics import precision_recall_curve
+from tools.utils import get_methods
 
 
 
@@ -33,6 +34,7 @@ def _load_log(run_name, mode, exp_id):
 
 def plot_run(run_name, mode, exp_id):
 
+    # Note that if you run main.py, exp_id receives 'frame' value
     data, base_dir = _load_log(run_name, mode, exp_id)
 
     train_l2 = data['train_l2']
@@ -46,16 +48,13 @@ def plot_run(run_name, mode, exp_id):
     scenario_auroc = data.get("scenario_auroc", {})
     scenario_aupr  = data.get("scenario_aupr", {})
 
-    if mode == 'mdn':
-        method = ['epis_']
-    elif mode == 'vae':
-        method = ['recon_']
-    else:
-        raise NotImplementedError
+    method = get_methods(mode)
 
     frame = _extract_frame_from_logtxt(base_dir)
 
-    # ===== Base Plot (ALL NEG) =====
+
+
+    # Base Plot (ALL NEG)
     def make_plot(tag, id_eval_cur, ood_eval_cur, auroc_cur, aupr_cur):
         fig, axes = plt.subplots(len(method) + 1, 3,
                                  figsize=(18, 4 * (len(method) + 1)),
@@ -111,11 +110,6 @@ def plot_run(run_name, mode, exp_id):
             axes[i+1, 2].set_xlim([0.0, 1.0])
             axes[i+1, 2].set_ylim([0.0, 1.0])
 
-            # (optional) PR baseline = positive rate
-            pos_rate = gt.mean()
-            axes[i+1, 2].plot([0, 1], [pos_rate, pos_rate], 'k--')
-
-
         plt.tight_layout()
         out = os.path.join(base_dir, f"plot_{mode}_{exp_id}_{tag}.png")
         plt.savefig(out, dpi=150)
@@ -127,8 +121,8 @@ def plot_run(run_name, mode, exp_id):
     for scen in scenario_eval:
         make_plot(
             scen,
-            scenario_eval[scen]["id"],    # 🔥 시나리오별 ID score
-            scenario_eval[scen]["ood"],   # 🔥 시나리오별 OOD score
+            scenario_eval[scen]["id"],    # Scenario-wise ID score
+            scenario_eval[scen]["ood"],   # Scenario-wise OOD score
             scenario_auroc[scen],
             scenario_aupr[scen]
         )

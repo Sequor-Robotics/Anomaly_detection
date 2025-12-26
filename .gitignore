@@ -1,5 +1,3 @@
-*.txt
 Anomaly_detection_dataset/
 __pycache__/
 res/
-script/

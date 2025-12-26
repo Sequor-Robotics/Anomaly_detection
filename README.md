@@ -8,7 +8,7 @@ We use this tool to collect Expert/Negative data of LiDAR (Livox Mid-360) and ot
 
 clone this repository
 
-    git clone https://github.com/2Nitrogen/Anomaly_detection_Sequor_TIPS.git
+    git clone https://github.com/Sequor-Robotics/Anomaly_detection.git
 
 Download dataset
 

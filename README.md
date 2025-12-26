@@ -1,32 +1,33 @@
-# Data collection & Processing tools
+# Anomaly detection
 
 This repository contains complete pipeline for processing raw data collected from Jackal mobile robots using ROS2 bag package.
 
 We use this tool to collect Expert/Negative data of LiDAR (Livox Mid-360) and other from sensors in warehouse sites. Ultimately, we aim to utilize the dataset to recognize abnormal behavior of robots in warehouse environments.
 
-
-### Scenario Taxonomy
-
-
-
-### Methodology
-
-
-
-### Definition of state-action
-
-![state-action](https://latex.codecogs.com/svg.image?\dpi{120}\mathbf{s}_t:=\begin{bmatrix}v_{[t-k:t]}\\a_{[t-k:t]}\\\omega_{[t-k:t]}\\p_{[t-k:t]}^{\mathrm{obj}}\\d_{[t-k:t]}\end{bmatrix}\qquad\mathbf{a}_t:=\begin{bmatrix}a_{[t]}\\\omega_{[t]}\end{bmatrix})
-
-
-
 ### How to use
 
-processing raw data
+clone this repository
 
-    python data_parser.py --src_dir ./Data --interp_method linear   # or, 'poly' 'spline'
-    python data_processor.py --src_dir ./Data
+    git clone https://github.com/2Nitrogen/Anomaly_detection_Sequor_TIPS.git
 
-training
+Download dataset
 
-    python main.py --frame 1 --id 1   # MDN
-    python main.py --frame 1 --mode vae --h_dim 128 --z_dim 32 --id 1   # VAE
+    cd ~/Anomaly_detection_Sequor_TIPS
+    git clone https://github.com/Sequor-Robotics/Anomaly_detection_dataset.git
+
+processing raw data (if needed)
+
+    cd ~/Anomaly_detection_Sequor_TIPS
+    python processor.py --src ./Data/{scenario_id}                                             # or
+    python processor.py --src ./Data/{scenario_id}/{trial_no}                                  # or
+    python processor.py --src ./Data/{scenario_id}/{trial_no}/{scenario_id}_{trial_no}_0.mcap
+
+labelling (if needed)
+
+    cd ~/Anomaly_detection_Sequor_TIPS
+    python label_tool.py
+
+training & show results
+
+    cd ~/Anomaly_detection_Sequor_TIPS
+    python main.py --frame 10 --mode vae --h_dim 256 --z_dim 64         # VAE

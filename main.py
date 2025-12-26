@@ -197,7 +197,7 @@ def main():
 
 
     ### Dataset summary
-    DATA_ROOT = Path("./Data").resolve()
+    DATA_ROOT = Path("./Anomaly_detection_dataset").resolve()
     collect_distances_to_csv(DATA_ROOT, include_missing=False)
 
 

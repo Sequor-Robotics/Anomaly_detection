@@ -8,8 +8,8 @@ class mixquality_dataset(data.Dataset):
                  train=True, neg=False, norm=True,
                  exp_case=None, neg_case=None, frame=10):
 
-
-        mix = MixQuality(root=root,train=train,neg=neg,norm=norm,exp_case=exp_case,neg_case=neg_case,frame=frame)
+        mix = MixQuality(root=root, train=train, neg=neg,
+                         norm=norm, exp_case=exp_case, neg_case=neg_case, frame=frame)
         self.x = mix.x
         self.y = mix.y
         self.e_label = mix.e_label

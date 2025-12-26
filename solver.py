@@ -88,7 +88,8 @@ class solver():
 
 
     def load_iter(self, args):
-        root = str(Path(args.root).resolve() / "Data")
+
+        root = str(Path(args.root).resolve() / "Anomaly_detection_dataset")
 
         sp = _Spinner("Loading datasets / dataloaders")
         sp.start()

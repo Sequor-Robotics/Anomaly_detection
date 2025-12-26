@@ -354,7 +354,6 @@ def load_negative_dataset(path, frame, neg_data_name_list):
             np.asarray(file),
             [],
             [],
-            [],
         )
 
     return (

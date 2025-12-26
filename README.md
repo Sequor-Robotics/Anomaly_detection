@@ -21,9 +21,9 @@ Download dataset
 
 processing raw data (if needed)
 
-    python processor.py --src ./Data/{scenario_id}                                             # or
-    python processor.py --src ./Data/{scenario_id}/{trial_no}                                  # or
-    python processor.py --src ./Data/{scenario_id}/{trial_no}/{scenario_id}_{trial_no}_0.mcap
+    python processor.py --src ./Anomaly_detection_dataset/{scenario_id}                                             # or
+    python processor.py --src ./Anomaly_detection_dataset/{scenario_id}/{trial_no}                                  # or
+    python processor.py --src ./Anomaly_detection_dataset/{scenario_id}/{trial_no}/{scenario_id}_{trial_no}_0.mcap
 
 labelling (if needed)
 

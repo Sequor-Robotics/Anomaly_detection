@@ -6,28 +6,30 @@ We use this tool to collect Expert/Negative data of LiDAR (Livox Mid-360) and ot
 
 ### How to use
 
-clone this repository
+Clone repository
 
     git clone https://github.com/Sequor-Robotics/Anomaly_detection.git
 
-Download dataset
+Setup environment (Python=3.10.19)
 
     cd ~/Anomaly_detection_Sequor_TIPS
+    pip install -r requirements.txt
+
+Download dataset
+
     git clone https://github.com/Sequor-Robotics/Anomaly_detection_dataset.git
 
 processing raw data (if needed)
 
-    cd ~/Anomaly_detection_Sequor_TIPS
     python processor.py --src ./Data/{scenario_id}                                             # or
     python processor.py --src ./Data/{scenario_id}/{trial_no}                                  # or
     python processor.py --src ./Data/{scenario_id}/{trial_no}/{scenario_id}_{trial_no}_0.mcap
 
 labelling (if needed)
 
-    cd ~/Anomaly_detection_Sequor_TIPS
     python label_tool.py
 
 training & show results
 
-    cd ~/Anomaly_detection_Sequor_TIPS
-    python main.py --frame 10 --mode vae --h_dim 256 --z_dim 64         # VAE
+    python main.py --frame 10 --mode vae --h_dim 256 --z_dim 64    # VAE
+    python main.py --frame 10 --mode mdn                           # MDN

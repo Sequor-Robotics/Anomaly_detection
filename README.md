@@ -12,7 +12,7 @@ Clone repository
 
 Setup environment (Python=3.10.19)
 
-    cd ~/Anomaly_detection_Sequor_TIPS
+    cd ~/Anomaly_detection
     pip install -r requirements.txt
 
 Download dataset
